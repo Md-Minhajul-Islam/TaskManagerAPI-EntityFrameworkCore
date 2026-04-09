@@ -1,294 +1,246 @@
-# TaskManagerAPI — Step 01: EF Core Basics
+# TaskManagerAPI — Step 02: Migrations
 
 ## 📌 What This Step Covers
-- What is ORM & why we use it
-- DbContext & DbSet
-- Connection String configuration
-- Change Tracking
-- SaveChanges / SaveChangesAsync
-- Generic Repository Pattern
-- Specific Repository Pattern
-- Unit of Work Pattern
-- Service Layer
-- Dependency Injection via Extensions
+- What is a Migration
+- Creating migrations
+- Updating the database
+- Understanding Up() and Down() methods
+- Removing migrations
+- Migration CLI commands cheat sheet
 
 ---
 
-## 🗂️ Folder Structure
+## 🧠 What is a Migration?
+
+When you change your C# models, the database doesn't automatically know about it.
+A **Migration** is EF Core's way of keeping the database **in sync** with your models.
 
 ```
-TaskManagerAPI/
-├── Controllers/
-│   └── UsersController.cs          ← HTTP layer (routes only, no logic)
-├── Data/
-│   └── AppDbContext.cs             ← EF Core bridge to the database
-├── DTOs/
-│   └── User/
-│       ├── CreateUserDto.cs        ← Input model for POST
-│       ├── UpdateUserDto.cs        ← Input model for PUT
-│       └── UserResponseDto.cs      ← Output model for all responses
-├── Models/
-│   ├── BaseEntity.cs               ← Shared Id, CreatedAt, UpdatedAt
-│   └── User.cs                     ← User domain model (maps to DB table)
-├── Extensions/
-│   └── ServiceCollectionExtensions.cs  ← Organized DI registrations
-├── Repositories/
-│   ├── Interfaces/
-│   │   ├── IRepository.cs          ← Generic CRUD contract
-│   │   └── IUserRepository.cs      ← User-specific query contract
-│   └── Implementations/
-│       ├── Repository.cs           ← Generic CRUD implementation
-│       └── UserRepository.cs       ← User-specific query implementation
-├── Services/
-│   ├── Interfaces/
-│   │   └── IUserService.cs         ← Business logic contract
-│   └── Implementations/
-│       └── UserService.cs          ← Business logic implementation
-├── UnitOfWork/
-│   ├── IUnitOfWork.cs              ← Contract for coordinating repositories
-│   └── UnitOfWork.cs              ← Single SaveChangesAsync for all repos
-├── appsettings.json                ← Connection string lives here
-└── Program.cs                      ← App entry point (clean, 3 lines)
+Your C# Model changed
+        │
+        ▼
+dotnet ef migrations add    ← EF Core reads your models and generates SQL instructions
+        │
+        ▼
+dotnet ef database update   ← EF Core runs those SQL instructions on the real database
+        │
+        ▼
+   DB is in sync ✅
+```
+
+Think of a migration as a **versioned change script** for your database — just like git commits are versioned changes for your code.
+
+---
+
+## 🗂️ What Gets Generated
+
+Running `dotnet ef migrations add InitialCreate` creates:
+
+```
+Data/Migrations/
+├── 20240101000000_InitialCreate.cs            ← YOUR migration (Up + Down)
+├── 20240101000000_InitialCreate.Designer.cs   ← EF Core metadata (never touch this)
+└── AppDbContextModelSnapshot.cs               ← Current DB state snapshot (never touch this)
+```
+
+| File | Purpose |
+|------|---------|
+| `XXXXXX_InitialCreate.cs` | Contains `Up()` and `Down()` methods you can read |
+| `XXXXXX_InitialCreate.Designer.cs` | EF Core internal metadata — auto-generated, don't edit |
+| `AppDbContextModelSnapshot.cs` | Snapshot of the current model state — EF Core uses this to generate the next migration diff |
+
+---
+
+## 🔼 Up() and Down() — The Heart of Every Migration
+
+Every migration file has exactly two methods:
+
+```csharp
+public partial class InitialCreate : Migration
+{
+    // ✅ Up() → APPLY the migration (runs on: dotnet ef database update)
+    protected override void Up(MigrationBuilder migrationBuilder)
+    {
+        migrationBuilder.CreateTable(
+            name: "Users",
+            columns: table => new
+            {
+                Id        = table.Column<int>().Annotation("SqlServer:Identity", "1, 1"),
+                FullName  = table.Column<string>(nullable: false),
+                Email     = table.Column<string>(nullable: false),
+                Role      = table.Column<string>(nullable: false),
+                IsActive  = table.Column<bool>(nullable: false),
+                CreatedAt = table.Column<DateTime>(nullable: false),
+                UpdatedAt = table.Column<DateTime>(nullable: true)
+            },
+            constraints: table =>
+            {
+                table.PrimaryKey("PK_Users", x => x.Id);
+            });
+    }
+
+    // ↩️ Down() → UNDO the migration (runs on: dotnet ef database update 0)
+    protected override void Down(MigrationBuilder migrationBuilder)
+    {
+        migrationBuilder.DropTable(name: "Users");
+    }
+}
+```
+
+| Method | Triggered by | What it does |
+|--------|-------------|--------------|
+| `Up()` | `dotnet ef database update` | Applies changes — creates tables, adds columns etc. |
+| `Down()` | `dotnet ef database update 0` | Undoes changes — drops tables, removes columns etc. |
+
+> 💡 `Up()` and `Down()` are always exact opposites of each other.
+> EF Core generates both automatically from your model changes.
+
+---
+
+## ⚡ CLI Commands
+
+### Create a migration
+```bash
+dotnet ef migrations add <MigrationName> --output-dir Data/Migrations
+```
+- Reads your current models
+- Compares with `AppDbContextModelSnapshot.cs`
+- Generates a new migration file with the diff
+
+### Apply migrations to database
+```bash
+dotnet ef database update
+```
+- Runs all pending `Up()` methods
+- Creates the database if it doesn't exist
+- Records applied migrations in `__EFMigrationsHistory` table
+
+### List all migrations
+```bash
+dotnet ef migrations list
+```
+Output:
+```
+20240101000000_InitialCreate  (Applied ✅)
+20240102000000_AddProjectTable (Pending ⏳)
+```
+
+### Revert to a specific migration
+```bash
+# Revert everything (runs all Down() methods)
+dotnet ef database update 0
+
+# Revert to a specific migration
+dotnet ef database update InitialCreate
+```
+
+### Remove the last migration
+```bash
+# ⚠️ Only works if the migration has NOT been applied to the DB yet
+dotnet ef migrations remove
 ```
 
 ---
 
-## 🔄 Request Flow (How a Request Travels Through the App)
+## 🔄 Full Migration Workflow
 
 ```
-HTTP Request  (e.g. POST /api/users)
-      │
-      ▼
-┌─────────────────┐
-│  UsersController │  ← Receives HTTP request, calls Service, returns HTTP response
-└────────┬────────┘
-         │ calls
-         ▼
-┌─────────────────┐
-│   UserService   │  ← Contains business logic (validation, mapping, rules)
-└────────┬────────┘
-         │ calls
-         ▼
-┌─────────────────┐
-│   IUnitOfWork   │  ← Provides access to repositories + single SaveChangesAsync
-└────────┬────────┘
-         │ accesses
-         ▼
-┌──────────────────────┐
-│  IUserRepository     │  ← Data access queries (GetByEmail, GetActiveUsers etc.)
-│  (via Repository<T>) │
-└────────┬─────────────┘
-         │ uses
-         ▼
-┌─────────────────┐
-│  AppDbContext   │  ← EF Core: tracks changes, generates SQL, talks to DB
-└────────┬────────┘
+1. Change your Model  (add a property, new class etc.)
          │
          ▼
-   SQL Server DB
+2. dotnet ef migrations add <Name>
+         │
+         EF Core compares your models with the last snapshot
+         Generates Up() → what to do
+         Generates Down() → how to undo it
+         │
+         ▼
+3. Review the generated migration file  ← always do this!
+         │
+         ▼
+4. dotnet ef database update
+         │
+         Runs Up() on the database
+         Records migration in __EFMigrationsHistory table
+         │
+         ▼
+5. ✅ Database is in sync with your Models
 ```
 
 ---
 
-## 🧠 Core Concepts Explained
+## ↩️ How to Safely Remove a Migration
 
-### 1. ORM (Object-Relational Mapper)
-Without ORM you write raw SQL:
+```
+Did you already run database update?
+         │
+    YES  │  NO
+    ▼         ▼
+dotnet ef     dotnet ef
+database      migrations
+update 0      remove ✅
+    │
+    ▼
+dotnet ef
+migrations
+remove ✅
+```
+
+> ⚠️ Never manually delete migration files. Always use `dotnet ef migrations remove`.
+> Manual deletion breaks the snapshot and corrupts future migrations.
+
+---
+
+## 🗃️ __EFMigrationsHistory Table
+
+When you run `database update`, EF Core creates a special table in your database:
+
 ```sql
-INSERT INTO Users (FullName, Email) VALUES ('John', 'john@mail.com')
+SELECT * FROM __EFMigrationsHistory
 ```
-With EF Core (ORM) you write C#:
-```csharp
-await _context.Users.AddAsync(user);
-await _context.SaveChangesAsync();
-// EF Core generates the SQL for you ✅
+
+| MigrationId | ProductVersion |
+|-------------|---------------|
+| 20240101000000_InitialCreate | 8.0.0 |
+
+EF Core uses this table to know which migrations have already been applied so it never runs the same migration twice.
+
+---
+
+## 🔁 Full Example Flow (This Step)
+
+```
+1. dotnet ef migrations add InitialCreate --output-dir Data/Migrations
+   └─ EF Core reads User model + BaseEntity
+   └─ Generates Up() → CREATE TABLE Users (...)
+   └─ Generates Down() → DROP TABLE Users
+
+2. dotnet ef database update
+   └─ Connects to SQL Server using connection string
+   └─ Creates TaskManagerDB database
+   └─ Runs Up() → creates Users table
+   └─ Inserts record into __EFMigrationsHistory
+
+3. dotnet run → open Swagger
+   └─ POST /api/users → INSERT INTO Users ✅
+   └─ GET  /api/users → SELECT * FROM Users ✅
+   └─ PUT  /api/users/1 → UPDATE Users SET ... ✅
+   └─ DELETE /api/users/1 → DELETE FROM Users ✅
 ```
 
 ---
 
-### 2. BaseEntity
-```csharp
-public abstract class BaseEntity
-{
-    public int       Id        { get; set; }   // Primary Key for every entity
-    public DateTime  CreatedAt { get; set; }   // Set on creation
-    public DateTime? UpdatedAt { get; set; }   // Set on every update
-}
-```
-> 💡 Every model inherits from `BaseEntity` so we never forget `Id`, `CreatedAt`, `UpdatedAt`.
+## 🧪 Endpoints Tested in This Step
 
----
-
-### 3. DbContext (`AppDbContext`)
-```csharp
-public class AppDbContext : DbContext
-{
-    public DbSet<User> Users => Set<User>();  // ← Represents the Users TABLE
-}
-```
-`DbContext` is the **brain of EF Core**. It:
-- Manages the database connection
-- Tracks every model loaded from DB (Change Tracking)
-- Generates SQL when `SaveChangesAsync()` is called
-- Acts as a built-in Unit of Work internally
-
----
-
-### 4. Connection String
-Defined in `appsettings.json`:
-```json
-"ConnectionStrings": {
-  "DefaultConnection": "Server=(localdb)\\mssqllocaldb;Database=TaskManagerDB;Trusted_Connection=True;"
-}
-```
-Registered in `ServiceCollectionExtensions.cs`:
-```csharp
-services.AddDbContext<AppDbContext>(options =>
-    options.UseSqlServer(configuration.GetConnectionString("DefaultConnection")));
-```
-> 💡 Never hardcode connection strings. Always read from configuration.
-
----
-
-### 5. Change Tracking
-EF Core **automatically watches** every model it loads from the database.
-When you change a property, EF Core knows about it:
-
-```
-User loaded from DB   →   EntityState = Unchanged
-user.FullName = "Bob" →   EntityState = Modified   (EF detected the change!)
-SaveChangesAsync()    →   EF generates UPDATE SQL only for changed columns
-```
-
-We use Change Tracking in `AppDbContext.SaveChangesAsync()` to auto-set `UpdatedAt`:
-```csharp
-foreach (var entry in ChangeTracker.Entries<BaseEntity>())
-{
-    if (entry.State == EntityState.Modified)
-        entry.Entity.UpdatedAt = DateTime.UtcNow;  // ← Automatic!
-}
-```
-
----
-
-### 6. EntityState Lifecycle
-
-```
-new User()           →  EntityState = Detached   (not tracked yet)
-_dbSet.Add(user)     →  EntityState = Added      (INSERT queued)
-SaveChangesAsync()   →  EntityState = Unchanged  (saved to DB)
-
-user.FullName = "X"  →  EntityState = Modified   (UPDATE queued)
-SaveChangesAsync()   →  EntityState = Unchanged  (saved to DB)
-
-_dbSet.Remove(user)  →  EntityState = Deleted    (DELETE queued)
-SaveChangesAsync()   →  EntityState = Detached   (gone from DB)
-```
-
----
-
-### 7. Generic Repository (`IRepository<T>` / `Repository<T>`)
-Provides standard CRUD for **any entity** so we don't repeat the same code:
-```csharp
-// Works for User, Project, Task, Team — any entity!
-Task<T?>             GetByIdAsync(int id);
-Task<IEnumerable<T>> GetAllAsync();
-Task<IEnumerable<T>> FindAsync(Expression<Func<T, bool>> predicate);
-Task AddAsync(T entity);
-void Update(T entity);
-void Remove(T entity);
-```
-> 💡 Every specific repository (e.g. `UserRepository`) **inherits** from `Repository<T>` and gets all this for free.
-
----
-
-### 8. Specific Repository (`IUserRepository` / `UserRepository`)
-Adds entity-specific queries on top of the generic ones:
-```csharp
-Task<User?> GetByEmailAsync(string email);       // User-specific
-Task<IEnumerable<User>> GetActiveUsersAsync();   // User-specific
-Task<bool> IsEmailUniqueAsync(string email);     // User-specific
-```
-
----
-
-### 9. Unit of Work (`IUnitOfWork` / `UnitOfWork`)
-Groups all repositories under one roof with a **single SaveChangesAsync**:
-```csharp
-// All repositories share the SAME DbContext instance
-_unitOfWork.Users.AddAsync(user);
-_unitOfWork.Projects.AddAsync(project);
-
-// ONE save commits BOTH operations atomically ✅
-await _unitOfWork.SaveChangesAsync();
-```
-Without Unit of Work each repository would have its own `SaveChangesAsync()` — if one succeeds and the other fails, your data becomes inconsistent.
-
----
-
-### 10. Service Layer (`UserService`)
-Contains all **business logic** — validation, rules, mapping:
-```
-Controller  →  receives HTTP, delegates to service
-Service     →  validates, applies rules, calls UnitOfWork, maps to DTO
-Repository  →  just queries/saves, no business logic
-```
-
-Rule: **Repositories never contain business logic. Services never query the DB directly.**
-
----
-
-### 11. DTOs (Data Transfer Objects)
-We never expose raw models to the API consumer:
-
-| DTO | Used for | Why |
-|-----|----------|-----|
-| `CreateUserDto` | POST body | Only accept fields needed for creation |
-| `UpdateUserDto` | PUT body | Only accept fields allowed to change |
-| `UserResponseDto` | All responses | Control exactly what gets returned |
-
-> 💡 `Id` is never in a Create DTO (DB assigns it). `Email` is never in Update DTO (emails don't change).
-
----
-
-### 12. Dependency Injection (DI)
-
-Everything is registered in `Extensions/ServiceCollectionExtensions.cs`:
-
-```csharp
-// Registration
-services.AddScoped<IUnitOfWork, UnitOfWork>();
-services.AddScoped<IUserService, UserService>();
-```
-
-`AddScoped` means **one instance per HTTP request** — perfect for DbContext and repositories.
-
-| Lifetime | When to use |
-|----------|-------------|
-| `AddScoped` | DbContext, Repositories, Services (per request) |
-| `AddSingleton` | Config, Cache (lives forever) |
-| `AddTransient` | Lightweight, stateless utilities (new every time) |
-
----
-
-## 🔁 Full Example: POST /api/users
-
-```
-1. POST /api/users  { "fullName": "Alice", "email": "alice@mail.com", "role": "Admin" }
-
-2. UsersController.Create(dto)
-   └─ calls _userService.CreateAsync(dto)
-
-3. UserService.CreateAsync(dto)
-   ├─ calls _unitOfWork.Users.IsEmailUniqueAsync("alice@mail.com")  → true
-   ├─ creates new User { FullName="Alice", Email="alice@mail.com" }
-   ├─ calls _unitOfWork.Users.AddAsync(user)     → EntityState = Added
-   ├─ calls _unitOfWork.SaveChangesAsync()       → INSERT INTO Users ...
-   │   └─ AppDbContext.SaveChangesAsync override checked for Modified entries
-   └─ returns UserResponseDto { Id=1, FullName="Alice", ... }
-
-4. Controller returns 201 Created with UserResponseDto
-```
+| Method | Endpoint | Expected Result |
+|--------|----------|----------------|
+| `POST` | `/api/users` | `201 Created` — user saved to DB |
+| `GET` | `/api/users` | `200 OK` — list of all users |
+| `GET` | `/api/users/1` | `200 OK` — single user |
+| `PUT` | `/api/users/1` | `200 OK` — user updated |
+| `POST` | `/api/users` (duplicate email) | `409 Conflict` — business rule enforced |
+| `DELETE` | `/api/users/1` | `204 No Content` — user deleted |
+| `GET` | `/api/users/1` (after delete) | `404 Not Found` |
 
 ---
 
@@ -296,34 +248,39 @@ services.AddScoped<IUserService, UserService>();
 
 | Rule | Reason |
 |------|--------|
-| Controllers only call Services | Keep HTTP concerns separate from business logic |
-| Services only call UnitOfWork | Repositories should never be injected directly into controllers |
-| Repositories never call SaveChanges | Only UnitOfWork decides when to commit |
-| Always use DTOs on API boundaries | Never expose raw EF models to HTTP responses |
-| One DbContext per request | `AddScoped` ensures this automatically |
+| Always review generated migration files | EF Core might generate unexpected changes |
+| Never edit `Designer.cs` or `Snapshot.cs` | These are auto-managed by EF Core |
+| Never manually delete migration files | Always use `dotnet ef migrations remove` |
+| Revert DB before removing an applied migration | Otherwise EF Core and DB go out of sync |
+| Name migrations descriptively | `AddProjectTable` not `Migration2` |
+| One concern per migration | Don't mix unrelated changes in one migration |
 
 ---
 
 ## 🚀 How to Run
 
 ```bash
-# 1. Make sure SQL Server LocalDB is installed
-# 2. Restore packages
-dotnet restore
+# 1. Install EF Core CLI (once per machine)
+dotnet tool install --global dotnet-ef
 
-# 3. Run (migrations come in Step 02 — DB not created yet)
+# 2. Create migration
+dotnet ef migrations add InitialCreate --output-dir Data/Migrations
+
+# 3. Apply to database
+dotnet ef database update
+
+# 4. Run the app
 dotnet run
 
-# 4. Open Swagger
+# 5. Open Swagger
 # https://localhost:{port}/swagger
 ```
 
 ---
 
-## ✅ What's Next — Step 02: Migrations
+## ✅ What's Next — Step 03: Entity Configuration
 In the next step we will:
-- Install EF Core CLI tools
-- Create the first migration (`InitialCreate`)
-- Understand the `Up()` and `Down()` methods
-- Run `dotnet ef database update` to create the actual database
-- Test all endpoints end-to-end with a real database
+- Use **Data Annotations** to configure columns directly on models
+- Use **Fluent API** for more advanced configuration in `OnModelCreating`
+- Use **IEntityTypeConfiguration** to keep configuration organized per entity
+- Configure table names, column types, max lengths, required fields, indexes and more
