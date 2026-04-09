@@ -1,10 +1,16 @@
-namespace TaskManagerAPI.Models
+using System.ComponentModel.DataAnnotations;
+using System.ComponentModel.DataAnnotations.Schema;
+
+namespace TaskManagerAPI.Models;
+
+public abstract class BaseEntity
 {
-    // Every entity inherits from BaseEntity
-    public abstract class BaseEntity
-    {
-        public int Id {get; set;}
-        public DateTime CreatedAt {get; set;} = DateTime.UtcNow;
-        public DateTime? UpdatedAt {get; set;}
-    }
+    [Key]                               // ← Marks as Primary Key
+    [DatabaseGenerated(DatabaseGeneratedOption.Identity)]  // ← Auto-increment
+    public int Id { get; set; }
+
+    [Required]
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+
+    public DateTime? UpdatedAt { get; set; }
 }
