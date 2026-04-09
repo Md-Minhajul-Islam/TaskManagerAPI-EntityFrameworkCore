@@ -1,0 +1,24 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.5.2.0
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TaskManagerAPI-EntityFrameworkCore", "TaskManagerAPI-EntityFrameworkCore.csproj", "{EBD2BF2B-6D96-88FF-2F95-650FE0765010}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{EBD2BF2B-6D96-88FF-2F95-650FE0765010}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{EBD2BF2B-6D96-88FF-2F95-650FE0765010}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{EBD2BF2B-6D96-88FF-2F95-650FE0765010}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{EBD2BF2B-6D96-88FF-2F95-650FE0765010}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {B9736083-8A7A-4716-B056-82518972750F}
+	EndGlobalSection
+EndGlobal

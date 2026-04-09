@@ -1,0 +1,6 @@
+@TaskManagerAPI_EntityFrameworkCore_HostAddress = http://localhost:5286
+
+GET {{TaskManagerAPI_EntityFrameworkCore_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###

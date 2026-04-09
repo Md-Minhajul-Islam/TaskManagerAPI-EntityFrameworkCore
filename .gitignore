@@ -1,0 +1,57 @@
+# .NET build outputs
+**/bin/
+**/obj/
+**/out/
+**/artifacts/
+
+# Visual Studio files
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Rider / JetBrains
+.idea/
+*.DotSettings.user
+
+# Visual Studio Code
+.vscode/
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# User-specific files
+*.rsuser
+
+# Logs and temporary files
+**/*.log
+**/*.tmp
+**/*.temp
+
+# Database / Secrets (Important for your TaskManagerAPI)
+appsettings.Development.json
+appsettings.*.json
+secrets.json
+*.pfx
+*.pem
+
+# Entity Framework migrations (optional - keep if you want to version migrations)
+# **/Migrations/   ← Uncomment only if you don't want to commit migrations
+
+# NuGet packages
+**/packages/
+*.nupkg
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Test results
+TestResults/
+**/coverage/
+
+# Publish output
+**/publish/
+**/PublishOutput/
