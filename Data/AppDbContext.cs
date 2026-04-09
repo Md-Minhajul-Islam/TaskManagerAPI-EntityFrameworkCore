@@ -22,13 +22,6 @@ namespace TaskManagerAPI.Data
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
             base.OnModelCreating(modelBuilder);
-
-            // Scans the assembly and automatically finds + applies
-            // every class that implements IEntityTypeConfiguration<T>
-            // So UserConfiguration.Configure() is called automatically here
-            modelBuilder.ApplyConfigurationsFromAssembly(
-                typeof(AppDbContext).Assembly
-            );
         }
 
 
