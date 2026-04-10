@@ -16,4 +16,7 @@ public class TeamMember
     public string Role {get; set;} = "Member";
 
     public DateTime JoinedAt {get; set;} = DateTime.UtcNow;
+
+    public Team Team {get; set;} = null!;
+    public User User {get; set;} = null!;  
 }

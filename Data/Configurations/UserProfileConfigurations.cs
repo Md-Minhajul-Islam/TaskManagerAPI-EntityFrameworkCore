@@ -30,13 +30,11 @@ public class UserProfileConfiguration : IEntityTypeConfiguration<UserProfile>
             .HasMaxLength(255)
             .HasColumnName("GitHubUrl");
 
-        // ── Foreign Key ────────────────────────────────────────────
-        // UserId is the Foreign Key that points to Users.Id
-        // This means every UserProfile row must have a valid UserId
-        // that exists in the Users table
-        builder.Property(up => up.UserId)
-            .IsRequired()
-            .HasColumnName("UserId");
+
+        builder.HasOne(up  =>  up.User)
+            .WithOne(u => u.Profile)
+            .HasForeignKey<UserProfile>(up => up.UserId)
+            .OnDelete(DeleteBehavior.Cascade);
         
         // Explicitly configure the Foreign Key constraint
         // We'll configure the full relationship (navigation properties)
@@ -44,6 +42,7 @@ public class UserProfileConfiguration : IEntityTypeConfiguration<UserProfile>
         builder.HasIndex(up => up.UserId)
             .IsUnique()
             .HasDatabaseName("IX_UserProfile_UserId");
+
 
 
     }
