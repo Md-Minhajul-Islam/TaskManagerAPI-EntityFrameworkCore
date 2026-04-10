@@ -63,13 +63,23 @@ public class UserConfiguration : IEntityTypeConfiguration<User>
             .IsRequired(false)              // NULL allowed
             .HasColumnName("UpdatedAt");
 
-        // ── Unique Index on Email ──────────────────────────────────
-        builder.HasIndex(u => u.Email)
-            .IsUnique()
-            .HasDatabaseName("IX_Users_Email");
+        //   ── Unique Index on Email ──────────────────────────────────
+        // builder.HasIndex(u => u.Email)
+        //     .IsUnique()
+        //     .HasDatabaseName("IX_Users_Email");
 
         // ── Index on IsActive (for filtering active users) ─────────
         builder.HasIndex(u => u.IsActive)
             .HasDatabaseName("IX_Users_IsActive");
+    
+
+        // ── Alternate Key ──────────────────────────────────────────────────────────
+        // An Alternate Key is different from a Unique Index:
+        //   - Unique Index   → just prevents duplicates
+        //   - Alternate Key  → prevents duplicates AND can be used as a FK target
+        //                      from another table (it's a real key constraint)
+        builder.HasAlternateKey(u => u.Email)
+            .HasName("AK_Users_Email");
+    
     }
 }
