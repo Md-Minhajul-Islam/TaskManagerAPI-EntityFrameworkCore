@@ -17,5 +17,7 @@ public class UserProfile : BaseEntity
 
     // Foreign Key property - links UserProfile to User
     // Every UserProfile MUST belong to exactly one user
-    public int UserId {get; set;}    
+    public int UserId {get; set;}
+    
+    public User User {get; set;}= null!;
 }

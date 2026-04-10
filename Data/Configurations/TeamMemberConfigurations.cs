@@ -34,5 +34,18 @@ public class TeamMemberConfiguration : IEntityTypeConfiguration<TeamMember>
         builder.Property(tm => tm.JoinedAt)
             .IsRequired()
             .HasDefaultValueSql("GETUTCDATE()");
+
+        // ── Many-to-Many: Team ↔ User ──────────────────────────
+        builder.HasOne(tm => tm.Team)
+            .WithMany(t => t.TeamMembers)
+            .HasForeignKey(tm => tm.TeamId)
+            .OnDelete(DeleteBehavior.Cascade);
+        
+
+        builder.HasOne(tm => tm.User)
+            .WithMany(u => u.TeamMembers)
+            .HasForeignKey(tm => tm.UserId)
+            .OnDelete(DeleteBehavior.Cascade);
+
     }
 }

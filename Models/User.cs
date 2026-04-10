@@ -25,4 +25,13 @@ public class User : BaseEntity
     [Required]
     [Column("IsActive")]
     public bool IsActive { get; set; } = true;
+
+
+    public UserProfile? Profile {get; set;}
+    public ICollection<TeamMember> TeamMembers {get; set;} = new List<TeamMember>();
+    public ICollection<Project> OwnedProjects {get; set;} = new List<Project>();
+    public ICollection<TaskItem> ReportedTasks {get; set;} = new List<TaskItem>();
+    public ICollection<TaskItem> AssignedTasks {get; set;} = new List<TaskItem>();
+    public ICollection<Comment> Comments {get; set;} = new List<Comment>();
+
 }
