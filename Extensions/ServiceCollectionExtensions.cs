@@ -17,7 +17,12 @@ namespace TaskManagerAPI.Extensions
             services.AddDbContext<AppDbContext>(options =>
             options.UseSqlServer(
                 configuration.GetConnectionString("DefaultConnection"))
-                   .LogTo(Console.WriteLine, LogLevel.Information));
+                    // ── Lazy Loading ───────────────────────────────────────
+                   // UseLazyLoadingProxies() wraps every entity in a proxy
+                   // Navigation properties are loaded automatically when accessed
+                   // Requires: virtual keyword on ALL navigation properties
+                    .UseLazyLoadingProxies()
+                    .LogTo(Console.WriteLine, LogLevel.Information));
 
             return services;
         }

@@ -32,7 +32,44 @@ public class Repository<T> : IRepository<T> where T : class
     
     public async Task<int> CountAsync()
         => await _dbSet.CountAsync();
+
+    // ── Eager Loading ──────────────────────────────────────────────────────
+    // Applies one or more Include() chains to the query before executing
+    // Each include is a function that takes IQueryable<T> and returns IQueryable<T>
+    public async Task<T?> GetByIdWithIncludesAsync(
+        int id,
+        params Func<IQueryable<T>, IQueryable<T>>[] includes
+    )
+    {
+        // Start with the base query
+        IQueryable<T> query = _dbSet;
+
+        // Apply each include function in order
+        // e.g. q => q.Include(u => u.Profile)
+        //      q => q.Include(u => u.TeamMembers).ThenInclude(tm => tm.Team)
+        foreach(var include in includes)
+        {
+            query = include(query);
+        }
+
+        // EF Core needs a primary key filter — use FindAsync pattern via Where
+        // Note: This works for entities with int Id (our BaseEntity)
+        return await query.FirstOrDefaultAsync(e => EF.Property<int>(e, "Id") == id);
+    }
     
+
+    public async Task<IEnumerable<T>> GetAllWithIncludesAsync(
+        params Func<IQueryable<T>, IQueryable<T>>[] includes
+    )
+    {
+        IQueryable<T> query = _dbSet;
+
+        foreach(var include in includes)
+        {
+            query = include(query);
+        }
+        return await query.ToListAsync();
+    }
     public async Task AddAsync(T entity)
         => await _dbSet.AddAsync(entity);
     

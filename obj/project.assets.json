@@ -38,6 +38,19 @@
           }
         }
       },
+      "Castle.Core/5.2.1": {
+        "type": "package",
+        "compile": {
+          "lib/net6.0/Castle.Core.dll": {
+            "related": ".xml"
+          }
+        },
+        "runtime": {
+          "lib/net6.0/Castle.Core.dll": {
+            "related": ".xml"
+          }
+        }
+      },
       "Humanizer.Core/2.14.1": {
         "type": "package",
         "compile": {
@@ -583,6 +596,23 @@
           "build/net10.0/Microsoft.EntityFrameworkCore.Design.props": {}
         }
       },
+      "Microsoft.EntityFrameworkCore.Proxies/10.0.5": {
+        "type": "package",
+        "dependencies": {
+          "Castle.Core": "5.2.1",
+          "Microsoft.EntityFrameworkCore": "10.0.5"
+        },
+        "compile": {
+          "lib/net10.0/Microsoft.EntityFrameworkCore.Proxies.dll": {
+            "related": ".xml"
+          }
+        },
+        "runtime": {
+          "lib/net10.0/Microsoft.EntityFrameworkCore.Proxies.dll": {
+            "related": ".xml"
+          }
+        }
+      },
       "Microsoft.EntityFrameworkCore.Relational/10.0.5": {
         "type": "package",
         "dependencies": {
@@ -1105,6 +1135,30 @@
         "lib/net8.0/Azure.Identity.xml",
         "lib/netstandard2.0/Azure.Identity.dll",
         "lib/netstandard2.0/Azure.Identity.xml"
+      ]
+    },
+    "Castle.Core/5.2.1": {
+      "sha512": "wHARzQA695jwwKreOzNsq54KiGqKP38tv8hi8e2FXDEC/sA6BtrX90tVPDkOfVu13PbEzr00TCV8coikl+D1Iw==",
+      "type": "package",
+      "path": "castle.core/5.2.1",
+      "files": [
+        ".nupkg.metadata",
+        ".signature.p7s",
+        "ASL - Apache Software Foundation License.txt",
+        "CHANGELOG.md",
+        "LICENSE",
+        "castle-logo.png",
+        "castle.core.5.2.1.nupkg.sha512",
+        "castle.core.nuspec",
+        "lib/net462/Castle.Core.dll",
+        "lib/net462/Castle.Core.xml",
+        "lib/net6.0/Castle.Core.dll",
+        "lib/net6.0/Castle.Core.xml",
+        "lib/netstandard2.0/Castle.Core.dll",
+        "lib/netstandard2.0/Castle.Core.xml",
+        "lib/netstandard2.1/Castle.Core.dll",
+        "lib/netstandard2.1/Castle.Core.xml",
+        "readme.txt"
       ]
     },
     "Humanizer.Core/2.14.1": {
@@ -2426,6 +2480,21 @@
         "microsoft.entityframeworkcore.design.nuspec"
       ]
     },
+    "Microsoft.EntityFrameworkCore.Proxies/10.0.5": {
+      "sha512": "ADoXceIHRqoIWTTM8WKoCMkWRieq9qh9RLEgAj1AWYHyJu2Zn5M0a97k2gDHI9l+uXc+UxRd8e2TwmWe3Pyqhg==",
+      "type": "package",
+      "path": "microsoft.entityframeworkcore.proxies/10.0.5",
+      "files": [
+        ".nupkg.metadata",
+        ".signature.p7s",
+        "Icon.png",
+        "PACKAGE.md",
+        "lib/net10.0/Microsoft.EntityFrameworkCore.Proxies.dll",
+        "lib/net10.0/Microsoft.EntityFrameworkCore.Proxies.xml",
+        "microsoft.entityframeworkcore.proxies.10.0.5.nupkg.sha512",
+        "microsoft.entityframeworkcore.proxies.nuspec"
+      ]
+    },
     "Microsoft.EntityFrameworkCore.Relational/10.0.5": {
       "sha512": "uxmFjZEAB/KbsgWFSS4lLqkEHCfXxB2x0UcbiO4e5fCRpFFeTMSx/me6009nYJLu5IKlDwO1POh++P6RilFTDw==",
       "type": "package",
@@ -3148,7 +3217,8 @@
     "net10.0": [
       "Microsoft.AspNetCore.OpenApi >= 10.0.4",
       "Microsoft.EntityFrameworkCore.SqlServer >= 10.0.5",
-      "Microsoft.EntityFrameworkCore.Tools >= 10.0.5"
+      "Microsoft.EntityFrameworkCore.Tools >= 10.0.5",
+      "Microsoft.Entityframeworkcore.proxies >= 10.0.5"
     ]
   },
   "packageFolders": {
@@ -3205,6 +3275,10 @@
           "Microsoft.EntityFrameworkCore.Tools": {
             "include": "Runtime, Build, Native, ContentFiles, Analyzers, BuildTransitive",
             "suppressParent": "All",
+            "target": "Package",
+            "version": "[10.0.5, )"
+          },
+          "Microsoft.Entityframeworkcore.proxies": {
             "target": "Package",
             "version": "[10.0.5, )"
           }

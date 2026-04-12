@@ -21,12 +21,9 @@ public class Project : BaseEntity
     public int TeamId {get; set;} // FK -> Teams.Id
     public int OwnerId {get; set;} // FK -> Users.Id
 
-    public Team Team{get; set;} = null!;
-
-    public User Owner {get; set;} = null!;
-
-    public ICollection<Sprint> Sprints {get; set;} = new List<Sprint>();
-
-    public ICollection<TaskItem> Tasks {get; set;} = new List<TaskItem>();
+    public virtual Team                   Team    { get; set; } = null!;
+    public virtual User                   Owner   { get; set; } = null!;
+    public virtual ICollection<Sprint>    Sprints { get; set; } = new List<Sprint>();
+    public virtual ICollection<TaskItem>  Tasks   { get; set; } = new List<TaskItem>();
 
 }

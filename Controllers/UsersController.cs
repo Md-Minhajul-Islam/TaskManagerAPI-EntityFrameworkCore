@@ -61,4 +61,36 @@ public class UsersController : ControllerBase
         var result = await _userService.DeleteAsync(id);
         return result ? NoContent() : NotFound();
     }
+
+    // GET: api/users/5/with-profile  — Eager Loading
+    [HttpGet("{id}/with-profile")]
+    public async Task<IActionResult> GetWithProfile(int id)
+    {
+        var result = await _userService.GetWithProfileAsync(id);
+        return result is null ? NotFound() : Ok(result);
+    }
+
+    // GET: api/users/5/with-teams  — Eager Loading + ThenInclude
+    [HttpGet("{id}/with-teams")]
+    public async Task<IActionResult> GetWithTeams(int id)
+    {
+        var result = await _userService.GetWithTeamsAsync(id);
+        return result is null ? NotFound() : Ok(result);
+    }
+
+    // GET: api/users/5/explicit-load  — Explicit Loading
+    [HttpGet("{id}/explicit-load")]
+    public async Task<IActionResult> GetWithExplicitLoad(int id)
+    {
+        var result = await _userService.GetWithExplicitLoadAsync(id);
+        return result is null ? NotFound() : Ok(result);
+    }
+
+    // GET: api/users/5/lazy-load  — Lazy Loading
+    [HttpGet("{id}/lazy-load")]
+    public async Task<IActionResult> GetWithLazyLoad(int id)
+    {
+        var result = await _userService.GetWithLazyLoadAsync(id);
+        return result is null ? NotFound() : Ok(result);
+    }
 }

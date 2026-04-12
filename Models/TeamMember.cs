@@ -17,6 +17,6 @@ public class TeamMember
 
     public DateTime JoinedAt {get; set;} = DateTime.UtcNow;
 
-    public Team Team {get; set;} = null!;
-    public User User {get; set;} = null!;  
+    public virtual Team Team { get; set; } = null!;
+    public virtual User User { get; set; } = null!;
 }

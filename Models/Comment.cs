@@ -15,7 +15,6 @@ public class Comment : BaseEntity
     public int TaskId {get; set;} // FK -> TaskItems.Id
     public int AuthorId {get; set;} // FK -> Users.Id
 
-    public TaskItem Task {get; set;} = null!;
-
-    public User Author {get; set;} = null!;
+    public virtual TaskItem Task   { get; set; } = null!;
+    public virtual User     Author { get; set; } = null!;
 }

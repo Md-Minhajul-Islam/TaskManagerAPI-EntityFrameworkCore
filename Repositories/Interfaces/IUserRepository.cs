@@ -8,4 +8,13 @@ public interface IUserRepository : IRepository<User>
     Task<User?> GetByEmailAsync(string email);
     Task<IEnumerable<User>> GetActiveUsersAsync();
     Task<bool> IsEmailUniqueAsync(string email);
+
+    // Eager Loading
+    Task<User?> GetWithProfileAsync(int id);
+    Task<User?> GetWithTeamsAsync(int id);
+    Task<User?> GetWithAllRelatedAsync(int id);
+
+    // Explicit Loading
+    Task LoadProfileAsync(User user);
+    Task LoadTeamsAsync(User user);
 }
