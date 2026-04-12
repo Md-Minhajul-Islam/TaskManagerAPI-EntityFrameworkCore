@@ -13,7 +13,6 @@ public class Team : BaseEntity
     [MaxLength(500)]
     public string? Description {get; set;}
 
-    public ICollection<Project> Projects {get; set;} = new List<Project>();
-
-    public ICollection<TeamMember> TeamMembers {get; set;} = new List<TeamMember>();
+    public virtual ICollection<Project>    Projects    { get; set; } = new List<Project>();
+    public virtual ICollection<TeamMember> TeamMembers { get; set; } = new List<TeamMember>();
 }

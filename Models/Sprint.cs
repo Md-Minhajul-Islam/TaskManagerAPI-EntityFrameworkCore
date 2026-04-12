@@ -20,7 +20,6 @@ public class Sprint : BaseEntity
 
     public int ProjectId {get; set;}
 
-    public Project Project {get; set;} = null!;
-
-    public ICollection<TaskItem> Tasks {get; set;} = new List<TaskItem>();
+    public virtual Project               Project { get; set; } = null!;
+    public virtual ICollection<TaskItem> Tasks   { get; set; } = new List<TaskItem>();
 }

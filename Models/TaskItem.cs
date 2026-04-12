@@ -28,15 +28,10 @@ public class TaskItem : BaseEntity
     public int? AssigneeId {get; set;} // FK -> Users.Id
     public int? SprintId {get; set;}
 
-    public Project Project {get; set;} = null!;
-
-    public User Reporter {get; set;} = null!;
-
-    public User? Assignee {get; set;}
-
-    public Sprint? Sprint {get; set;}
-
-    public ICollection<Comment> Comments {get; set;} = new List<Comment>();
-
-    public ICollection<TaskLabel> TaskLabels {get; set;} = new List<TaskLabel>();
+    public virtual Project               Project    { get; set; } = null!;
+    public virtual User                  Reporter   { get; set; } = null!;
+    public virtual User?                 Assignee   { get; set; }
+    public virtual Sprint?               Sprint     { get; set; }
+    public virtual ICollection<Comment>  Comments   { get; set; } = new List<Comment>();
+    public virtual ICollection<TaskLabel> TaskLabels { get; set; } = new List<TaskLabel>();
 }

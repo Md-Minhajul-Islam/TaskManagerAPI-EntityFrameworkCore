@@ -157,3 +157,5 @@ E:\github\TaskManagerAPI-EntityFrameworkCore\obj\Debug\net10.0\refint\TaskManage
 E:\github\TaskManagerAPI-EntityFrameworkCore\obj\Debug\net10.0\TaskManagerAPI-EntityFrameworkCore.pdb
 E:\github\TaskManagerAPI-EntityFrameworkCore\obj\Debug\net10.0\TaskManagerAPI-EntityFrameworkCore.genruntimeconfig.cache
 E:\github\TaskManagerAPI-EntityFrameworkCore\obj\Debug\net10.0\ref\TaskManagerAPI-EntityFrameworkCore.dll
+E:\github\TaskManagerAPI-EntityFrameworkCore\bin\Debug\net10.0\Castle.Core.dll
+E:\github\TaskManagerAPI-EntityFrameworkCore\bin\Debug\net10.0\Microsoft.EntityFrameworkCore.Proxies.dll

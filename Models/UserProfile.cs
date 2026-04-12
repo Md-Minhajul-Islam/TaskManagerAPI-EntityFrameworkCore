@@ -19,5 +19,5 @@ public class UserProfile : BaseEntity
     // Every UserProfile MUST belong to exactly one user
     public int UserId {get; set;}
     
-    public User User {get; set;}= null!;
+    public virtual User User { get; set; } = null!;
 }

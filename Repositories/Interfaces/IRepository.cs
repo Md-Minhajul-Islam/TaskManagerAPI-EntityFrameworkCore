@@ -14,6 +14,12 @@ namespace TaskManagerAPI.Repositories.Interfaces
         Task<int> CountAsync();
 
 
+        // Eager Loading
+        Task<T?> GetByIdWithIncludesAsync(int id, params Func<IQueryable<T>, IQueryable<T>>[] includes);
+
+        Task<IEnumerable<T>> GetAllWithIncludesAsync(params Func<IQueryable<T>, IQueryable<T>>[] includes);
+
+
         // Commands
         Task AddAsync(T entity);
         Task AddRangeAsync(IEnumerable<T> entities);

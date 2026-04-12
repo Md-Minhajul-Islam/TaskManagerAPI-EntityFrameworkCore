@@ -14,5 +14,5 @@ public class Label : BaseEntity
     [MaxLength(7)]
     public string Color {get; set;} = "#000000";
 
-    public ICollection<TaskLabel> TaskLabels {get; set;} = new List<TaskLabel>();
+    public virtual ICollection<TaskLabel> TaskLabels {get; set;} = new List<TaskLabel>();
 }

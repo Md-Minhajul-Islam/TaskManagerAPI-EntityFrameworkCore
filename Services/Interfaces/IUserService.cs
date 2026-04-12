@@ -10,4 +10,11 @@ public interface IUserService
     Task<UserResponseDto> CreateAsync(CreateUserDto dto);
     Task<UserResponseDto?> UpdateAsync(int id, UpdateUserDto dto);
     Task<bool> DeleteAsync(int id); 
+
+    // ── Loading Related Data ───────────────────────────────────
+    Task<UserWithProfileDto?>  GetWithProfileAsync(int id);
+    Task<UserWithTeamsDto?>    GetWithTeamsAsync(int id);
+    Task<UserWithProfileDto?>  GetWithExplicitLoadAsync(int id);
+    Task<UserWithProfileDto?>  GetWithLazyLoadAsync(int id);
+
 }
