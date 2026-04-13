@@ -7,19 +7,61 @@ namespace TaskManagerAPI.Repositories.Implementations;
 
 public class UserRepository : Repository<User>, IUserRepository
 {
+
+    // Compiled Queries
+    // Compiled ONCE at startup - EF Core skips LINQ -> SQL translation
+    // on every subsequent call. Best for high-frequency queries.
+
+    // Compiled: get user by email
+    private static readonly Func<AppDbContext, string, Task<User?>>
+        GetByEmailCompiled = EF.CompileAsyncQuery((AppDbContext ctx, string email) =>
+            ctx.Users.FirstOrDefault(u => u.Email.ToLower() == email.ToLower()));
+
+    
+    // Compiled: get all active users ordered by name
+    private static readonly Func<AppDbContext, IAsyncEnumerable<User>>
+        GetActiveUsersCompiled =
+            EF.CompileAsyncQuery((AppDbContext ctx) =>
+                ctx.Users
+                    .Where(u => u.IsActive)
+                    .OrderBy(u => u.FullName)
+                    .AsNoTracking());
+
+    // Compiled: get users by role
+    private static readonly Func<AppDbContext, string, IAsyncEnumerable<User>>
+        GetByRoleCompiled =
+            EF.CompileAsyncQuery((AppDbContext ctx, string role) =>
+                ctx.Users
+                    .Where(u => u.Role == role && u.IsActive)
+                    .OrderBy(u => u.FullName)
+                    .AsNoTracking());
+
+
     public UserRepository(AppDbContext context) : base(context)
     {
         
     }
 
     public async Task<User?> GetByEmailAsync(string email)
-        => await _dbSet.FirstOrDefaultAsync(u => u.Email.ToLower() == email.ToLower());
+        => await GetByEmailCompiled(_context, email);
     
     public async Task<IEnumerable<User>> GetActiveUsersAsync()
-        => await _dbSet
-            .Where(u => u.IsActive)
-            .OrderBy(u => u.FullName)
-            .ToListAsync();
+    {
+        var users = new List<User>();
+        await foreach(var user in GetActiveUsersCompiled(_context))
+        {
+            users.Add(user);
+        }
+        return users;
+    }
+
+    public async Task<IEnumerable<User>> GetByRoleAsync(string role)
+    {
+        var users = new List<User>();
+        await foreach (var user in GetByRoleCompiled(_context, role))
+            users.Add(user);
+        return users;
+    }
     
     public async Task<bool> IsEmailUniqueAsync(string email)
         => !await _dbSet.AnyAsync(u => u.Email.ToLower() == email.ToLower());
@@ -35,6 +77,7 @@ public class UserRepository : Repository<User>, IUserRepository
     {
         return await GetByIdWithIncludesAsync(
             id,
+            splitQuery: true,
             q => q.Include(u => u.Profile)
         );
     }
@@ -43,6 +86,7 @@ public class UserRepository : Repository<User>, IUserRepository
     {
         return await GetByIdWithIncludesAsync(
             id,
+            splitQuery: true,
             q => q.Include(u => u.TeamMembers)
                     .ThenInclude(tm => tm.Team)
         );
@@ -52,6 +96,7 @@ public class UserRepository : Repository<User>, IUserRepository
     {
         return await GetByIdWithIncludesAsync(
             id,
+            splitQuery: true,
             q => q.Include(u => u.Profile),
             q => q.Include(u => u.TeamMembers)
                     .ThenInclude(tm => tm.Team),
