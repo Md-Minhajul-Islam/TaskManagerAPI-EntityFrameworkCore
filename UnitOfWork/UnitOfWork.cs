@@ -10,6 +10,7 @@ public class UnitOfWorkImp : IUnitOfWork
 
     // Lazy initialization - repository are created only when accessed
     private IUserRepository? _users;
+    private ITaskRepository? _tasks;
 
     public UnitOfWorkImp(AppDbContext context)
     {
@@ -17,7 +18,7 @@ public class UnitOfWorkImp : IUnitOfWork
     }
 
     public IUserRepository Users => _users ??= new UserRepository(_context);
-
+    public ITaskRepository Tasks => _tasks ??= new TaskRepository(_context);
 
 
     // All repositories share the same DbContext

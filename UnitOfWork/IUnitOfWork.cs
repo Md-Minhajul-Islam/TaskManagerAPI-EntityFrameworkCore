@@ -1,4 +1,5 @@
 using TaskManagerAPI.Repositories.Interfaces;
+using TaskManagerAPI.Services.Interfaces;
 
 namespace TaskManagerAPI.UnitOfWork;
 
@@ -8,7 +9,7 @@ namespace TaskManagerAPI.UnitOfWork;
 public interface IUnitOfWork : IDisposable
 {
     IUserRepository Users {get;}
-
+    ITaskRepository Tasks {get;}
     // Single commit point - all repository changes
     // saved in ONE database transaction
     Task<int> SaveChangesAsync();

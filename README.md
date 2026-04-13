@@ -1,372 +1,453 @@
-# TaskManagerAPI — Step 06: Loading Related Data
+# TaskManagerAPI — Step 07: Querying Data with LINQ
 
 ## 📌 What This Step Covers
-- Eager Loading — `Include()` and `ThenInclude()`
-- Lazy Loading — automatic loading via proxies
-- Explicit Loading — `Entry().Reference/Collection().LoadAsync()`
-- Adding loading methods to `IUserRepository` / `UserRepository`
-- Adding loading methods to `IUserService` / `UserService`
-- New DTOs for loading responses
-- Controller calling Service only (never UnitOfWork directly)
+- Where — filtering rows
+- Select — projecting to a smaller shape
+- OrderBy / OrderByDescending / ThenBy — sorting
+- GroupBy — grouping results
+- Count / Sum / Average — aggregations
+- Skip / Take — pagination
+- QueryParameters — reusable filter/sort/page input model
+- PagedResult<T> — reusable paginated response wrapper
+- ITaskRepository / TaskRepository — entity-specific queries
+- ITaskService / TaskService — business logic for tasks
+- TasksController — HTTP endpoints
 
 ---
 
-## 🧠 Three Loading Strategies
+## 🧠 LINQ → SQL Translation
 
-| Strategy | How | SQL Queries | Use When |
-|----------|-----|-------------|----------|
-| **Eager** | `Include()` / `ThenInclude()` | 1 query with JOINs | You know upfront what you need ✅ |
-| **Lazy** | Access navigation property | 1 extra query per property access | Quick prototyping only ⚠️ |
-| **Explicit** | `Entry().Reference/Collection().LoadAsync()` | 1 extra query per call | Load selectively after initial load |
+Every LINQ method translates to a SQL clause:
 
----
-
-## 1️⃣ Eager Loading
-
-Eager Loading loads related data **in the same SQL query** using JOINs.
-You tell EF Core exactly what to load upfront using `Include()`.
-
-### `Include()` — first level
-```csharp
-// Loads User + Profile in ONE query
-// SQL: SELECT * FROM Users u
-//      LEFT JOIN UserProfiles up ON up.UserId = u.Id
-//      WHERE u.Id = @id
-await _dbSet
-    .Include(u => u.Profile)
-    .FirstOrDefaultAsync(u => u.Id == id);
-```
-
-### `ThenInclude()` — second level
-```csharp
-// Loads User → TeamMembers → Team in ONE query
-// SQL: JOIN TeamMembers tm ON tm.UserId = u.Id
-//      JOIN Teams t ON t.Id = tm.TeamId
-await _dbSet
-    .Include(u => u.TeamMembers)         // first level
-        .ThenInclude(tm => tm.Team)      // second level (inside TeamMembers)
-    .FirstOrDefaultAsync(u => u.Id == id);
-```
-
-### Multiple `Include()` chains
-```csharp
-// Load multiple relations in ONE query
-await _dbSet
-    .Include(u => u.Profile)
-    .Include(u => u.TeamMembers)
-        .ThenInclude(tm => tm.Team)
-    .Include(u => u.OwnedProjects)
-    .Include(u => u.AssignedTasks)
-    .FirstOrDefaultAsync(u => u.Id == id);
-```
+| LINQ Method | SQL Equivalent |
+|-------------|---------------|
+| `Where(x => x.Status == "Todo")` | `WHERE Status = 'Todo'` |
+| `Select(x => new { x.Id, x.Title })` | `SELECT Id, Title` |
+| `OrderBy(x => x.CreatedAt)` | `ORDER BY CreatedAt ASC` |
+| `OrderByDescending(x => x.CreatedAt)` | `ORDER BY CreatedAt DESC` |
+| `ThenBy(x => x.Title)` | `, Title ASC` |
+| `GroupBy(x => x.Status)` | `GROUP BY Status` |
+| `Count()` | `COUNT(*)` |
+| `Sum(x => x.Points)` | `SUM(Points)` |
+| `Average(x => x.Points)` | `AVG(Points)` |
+| `Skip(20)` | `OFFSET 20 ROWS` |
+| `Take(10)` | `FETCH NEXT 10 ROWS ONLY` |
+| `Any(x => ...)` | `EXISTS (SELECT 1 WHERE ...)` |
+| `FirstOrDefault(x => ...)` | `SELECT TOP 1 WHERE ...` |
 
 ---
 
-## 2️⃣ Generic Repository — `GetByIdWithIncludesAsync`
+## 1️⃣ Where — Filtering
 
-The base `Repository<T>` has a method that accepts Include functions as parameters:
+`Where()` filters rows based on a condition — generates a `WHERE` clause.
 
 ```csharp
-// IRepository.cs
-Task<T?> GetByIdWithIncludesAsync(
-    int id,
-    params Func<IQueryable<T>, IQueryable<T>>[] includes);
+// Simple filter
+_dbSet.Where(t => t.Status == "Todo")
+// SQL: SELECT * FROM TaskItems WHERE Status = 'Todo'
 
-Task<IEnumerable<T>> GetAllWithIncludesAsync(
-    params Func<IQueryable<T>, IQueryable<T>>[] includes);
-```
+// Multiple conditions
+_dbSet.Where(t => t.Status == "Todo" && !t.IsDeleted)
+// SQL: SELECT * FROM TaskItems WHERE Status = 'Todo' AND IsDeleted = 0
 
-### Understanding `Func<IQueryable<T>, IQueryable<T>>`
+// Chained Where (AND conditions)
+query = query.Where(t => t.Priority == "High");
+query = query.Where(t => t.ProjectId == 1);
+// SQL: WHERE Priority = 'High' AND ProjectId = 1
 
-```
-Func  <  IQueryable<T>  ,  IQueryable<T>  >
-            ↑                    ↑
-         INPUT               OUTPUT
-      query before         same query but
-      Include added        with Include added
-
-// A concrete example:
-q => q.Include(u => u.Profile)
-↑              ↑
-q = the        adds .Include(Profile) to
-input query    the query and returns it
-```
-
-### How it works inside `Repository<T>`
-```csharp
-public async Task<T?> GetByIdWithIncludesAsync(
-    int id,
-    params Func<IQueryable<T>, IQueryable<T>>[] includes)
-{
-    IQueryable<T> query = _dbSet;       // Step 1: plain query
-
-    foreach (var include in includes)
-        query = include(query);         // Step 2: apply each Include function
-
-    return await query
-        .FirstOrDefaultAsync(e => EF.Property<int>(e, "Id") == id);
-}
-```
-
-### How `UserRepository` calls it
-```csharp
-// Passes ONE include function
-public async Task<User?> GetWithProfileAsync(int id)
-    => await GetByIdWithIncludesAsync(
-            id,
-            q => q.Include(u => u.Profile)     // ← the Func
-       );
-
-// Passes MULTIPLE include functions
-public async Task<User?> GetWithAllRelatedAsync(int id)
-    => await GetByIdWithIncludesAsync(
-            id,
-            q => q.Include(u => u.Profile),                     // function 1
-            q => q.Include(u => u.TeamMembers)
-                    .ThenInclude(tm => tm.Team),                 // function 2
-            q => q.Include(u => u.OwnedProjects),               // function 3
-            q => q.Include(u => u.AssignedTasks)                // function 4
-       );
-```
-
-### The `params` keyword
-```csharp
-// params = pass any number of arguments without creating an array manually
-// C# wraps them into an array automatically
-
-// Without params — verbose:
-GetByIdWithIncludesAsync(id, new Func<IQueryable<User>, IQueryable<User>>[]
-{
-    q => q.Include(u => u.Profile),
-    q => q.Include(u => u.TeamMembers)
-});
-
-// With params — clean:
-GetByIdWithIncludesAsync(id,
-    q => q.Include(u => u.Profile),
-    q => q.Include(u => u.TeamMembers)
-);
+// Contains — like LIKE '%term%'
+query = query.Where(t => t.Title.Contains("login"));
+// SQL: WHERE Title LIKE '%login%'
 ```
 
 ---
 
-## 3️⃣ Explicit Loading
+## 2️⃣ Select — Projection
 
-Explicit Loading loads related data **on demand** with a **separate SQL query**.
-You already have the entity and decide later what to load.
+`Select()` maps entities to a different shape — generates a `SELECT` with specific columns.
+Use it to avoid loading columns you don't need.
 
 ```csharp
-// Step 1 — load User with NO related data
-var user = await _unitOfWork.Users.GetByIdAsync(id);
+// Project to anonymous type
+_dbSet.Select(t => new { t.Id, t.Title, t.Status })
+// SQL: SELECT Id, Title, Status FROM TaskItems
 
-// Step 2 — explicitly load one relation at a time
-// Each fires a SEPARATE SQL query
-
-// Reference = single navigation property (one entity)
-await _context.Entry(user)
-    .Reference(u => u.Profile)
-    .LoadAsync();
-// SQL: SELECT * FROM UserProfiles WHERE UserId = @userId
-
-// Collection = collection navigation property (many entities)
-await _context.Entry(user)
-    .Collection(u => u.TeamMembers)
-    .LoadAsync();
-// SQL: SELECT * FROM TeamMembers WHERE UserId = @userId
+// Project to a DTO
+_dbSet
+    .Where(t => t.ProjectId == projectId)
+    .Include(t => t.Assignee)
+    .Select(t => new TaskSummary
+    {
+        Id           = t.Id,
+        Title        = t.Title,
+        Status       = t.Status,
+        Priority     = t.Priority,
+        AssigneeName = t.Assignee != null
+                           ? t.Assignee.FullName
+                           : "Unassigned"
+    })
+// SQL: SELECT t.Id, t.Title, t.Status, t.Priority, u.FullName
+//      FROM TaskItems t LEFT JOIN Users u ON u.Id = t.AssigneeId
+//      WHERE t.ProjectId = @id
 ```
 
-### In `UserRepository`
-```csharp
-public async Task LoadProfileAsync(User user)
-    => await _context.Entry(user)
-        .Reference(u => u.Profile)      // Reference = single entity
-        .LoadAsync();
-
-public async Task LoadTeamsAsync(User user)
-    => await _context.Entry(user)
-        .Collection(u => u.TeamMembers) // Collection = many entities
-        .LoadAsync();
-```
-
-### When to use Explicit Loading
-- You loaded an entity but conditionally need its relations
-- You want full control over when extra queries fire
-- Loading large collections only when specifically needed
+> 💡 Always project to DTOs at the repository level when you don't need the full entity.
+> This reduces data transfer between DB and app.
 
 ---
 
-## 4️⃣ Lazy Loading
+## 3️⃣ OrderBy — Sorting
 
-Lazy Loading loads related data **automatically** when you access a navigation property.
-EF Core wraps entities in a proxy class that fires SQL when properties are accessed.
+`OrderBy()` sorts results ascending, `OrderByDescending()` sorts descending.
+`ThenBy()` adds a secondary sort.
 
-### Setup — install package
-```bash
-dotnet add package Microsoft.EntityFrameworkCore.Proxies
+```csharp
+// Simple ascending sort
+_dbSet.OrderBy(t => t.CreatedAt)
+// SQL: ORDER BY CreatedAt ASC
+
+// Descending sort
+_dbSet.OrderByDescending(t => t.CreatedAt)
+// SQL: ORDER BY CreatedAt DESC
+
+// Primary + secondary sort
+_dbSet
+    .OrderBy(t => t.Priority)
+    .ThenBy(t => t.CreatedAt)
+// SQL: ORDER BY Priority ASC, CreatedAt ASC
+
+// Custom sort order (not alphabetical)
+_dbSet.OrderBy(t =>
+    t.Priority == "High"   ? 1 :
+    t.Priority == "Medium" ? 2 : 3)
+// SQL: ORDER BY CASE Priority
+//              WHEN 'High' THEN 1
+//              WHEN 'Medium' THEN 2
+//              ELSE 3 END
 ```
 
-### Setup — enable in `ServiceCollectionExtensions.cs`
+---
+
+## 4️⃣ GroupBy — Grouping
+
+`GroupBy()` groups rows by a key — generates a `GROUP BY` clause.
+The result is groups where `g.Key` is the grouped value and `g` contains the items.
+
 ```csharp
-options.UseSqlServer(connectionString)
-       .UseLazyLoadingProxies();   // ← enables lazy loading
+_dbSet
+    .Where(t => t.ProjectId == projectId)
+    .GroupBy(t => t.Status)             // ← group by Status column
+    .Select(g => new TaskGroupByStatus
+    {
+        Status     = g.Key,             // ← the grouped value ("Todo", "InProgress" etc.)
+        Count      = g.Count(),         // ← COUNT(*) per group
+        TaskTitles = g.Select(t => t.Title).ToList()  // ← items in each group
+    })
+
+// SQL: SELECT Status, COUNT(*), ...
+//      FROM TaskItems
+//      WHERE ProjectId = @id
+//      GROUP BY Status
 ```
 
-### Setup — mark ALL navigation properties as `virtual`
-```csharp
-// Every navigation property MUST be virtual for lazy loading to work
-// EF Core proxy overrides virtual properties to fire SQL automatically
+### Understanding the GroupBy result
+```
+Input rows:
+  { Id=1, Status="Todo",       Title="Task A" }
+  { Id=2, Status="Todo",       Title="Task B" }
+  { Id=3, Status="InProgress", Title="Task C" }
+  { Id=4, Status="Done",       Title="Task D" }
 
-public virtual UserProfile?             Profile     { get; set; }
-public virtual ICollection<TeamMember>  TeamMembers { get; set; } = new List<TeamMember>();
-public virtual ICollection<Project>     OwnedProjects { get; set; } = new List<Project>();
+After GroupBy(t => t.Status):
+  Group 1: Key="Todo"        → [Task A, Task B]
+  Group 2: Key="InProgress"  → [Task C]
+  Group 3: Key="Done"        → [Task D]
+
+After Select:
+  { Status="Todo",        Count=2, TaskTitles=["Task A", "Task B"] }
+  { Status="InProgress",  Count=1, TaskTitles=["Task C"] }
+  { Status="Done",        Count=1, TaskTitles=["Task D"] }
 ```
 
-### How it works
-```csharp
-// Load User with NO Include()
-var user = await _unitOfWork.Users.GetByIdAsync(id);
+---
 
-// Accessing Profile property AUTOMATICALLY fires a SQL query!
-// EF Core proxy intercepts this access
-var bio = user.Profile?.Bio;
-// SQL fires here: SELECT * FROM UserProfiles WHERE UserId = @userId
+## 5️⃣ Aggregation — Count, Sum, Average
+
+```csharp
+// COUNT — total rows
+var total = await _dbSet.CountAsync();
+// SQL: SELECT COUNT(*) FROM TaskItems
+
+// COUNT with filter
+var completed = await _dbSet.CountAsync(t => t.Status == "Done");
+// SQL: SELECT COUNT(*) FROM TaskItems WHERE Status = 'Done'
+
+// COUNT in memory (after ToListAsync)
+var tasks = await _dbSet.ToListAsync();
+var completed = tasks.Count(t => t.Status == "Done");  // LINQ to Objects
+
+// Completion rate (average / percentage)
+var rate = Math.Round((double)completed / total * 100, 2);
+// e.g. 3 done / 10 total = 30.00%
+
+// AnyAsync — checks if any row matches
+var exists = await _dbSet.AnyAsync(t => t.Title == "Fix Bug");
+// SQL: SELECT TOP 1 1 FROM TaskItems WHERE Title = 'Fix Bug'
 ```
 
-### ⚠️ N+1 Problem — why Lazy Loading is dangerous
-```csharp
-// ❌ DANGEROUS — 101 SQL queries for 100 users!
-var users = await _context.Users.ToListAsync();  // 1 query
-foreach (var user in users)
-{
-    var bio = user.Profile?.Bio;
-    // ↑ fires 1 SQL per user = 100 extra queries!
-}
-// Total: 101 queries 😱
+---
 
-// ✅ CORRECT — use Eager Loading instead
-var users = await _context.Users
-    .Include(u => u.Profile)    // 1 query with JOIN
+## 6️⃣ Pagination — Skip / Take
+
+Pagination loads a **subset** of rows instead of all rows at once.
+
+### How Skip / Take work
+```
+Total rows: 50 tasks
+Page size: 10
+
+Page 1: Skip(0).Take(10)   → rows 1-10
+Page 2: Skip(10).Take(10)  → rows 11-20
+Page 3: Skip(20).Take(10)  → rows 21-30
+
+Formula: Skip = (pageNumber - 1) * pageSize
+```
+
+### Code
+```csharp
+var pageNumber = 2;
+var pageSize   = 10;
+
+var items = await _dbSet
+    .OrderBy(t => t.CreatedAt)
+    .Skip((pageNumber - 1) * pageSize)   // skip 10
+    .Take(pageSize)                       // take 10
     .ToListAsync();
-// Total: 1 query ✅
+
+// SQL: SELECT * FROM TaskItems
+//      ORDER BY CreatedAt
+//      OFFSET 10 ROWS
+//      FETCH NEXT 10 ROWS ONLY
 ```
 
-> 💡 Use Lazy Loading only for quick prototyping.
-> Always use Eager Loading in production.
+> ⚠️ Always `OrderBy` before `Skip/Take`.
+> Without ordering, SQL Server can return rows in any order — pagination becomes unreliable.
 
 ---
 
-## 5️⃣ Full Layer Flow
+## 7️⃣ QueryParameters — Reusable Input Model
 
-### Rule — Controller only calls Service, never UnitOfWork directly
-
-```
-Controller  →  calls IUserService only              ✅
-Service     →  calls IUnitOfWork                    ✅
-UnitOfWork  →  calls IUserRepository                ✅
-Repository  →  queries AppDbContext                 ✅
-
-Controller  →  calls IUnitOfWork directly           ❌ WRONG
-Controller  →  calls IUserRepository directly       ❌ WRONG
-```
-
-### Example: GET /api/users/5/with-profile
-
-```
-1. GET /api/users/5/with-profile
-
-2. UsersController.GetWithProfile(5)
-   └─ calls _userService.GetWithProfileAsync(5)
-
-3. UserService.GetWithProfileAsync(5)
-   └─ calls _unitOfWork.Users.GetWithProfileAsync(5)
-
-4. UserRepository.GetWithProfileAsync(5)
-   └─ calls GetByIdWithIncludesAsync(5, q => q.Include(u => u.Profile))
-
-5. Repository<T>.GetByIdWithIncludesAsync(5, ...)
-   └─ query = _dbSet
-   └─ query = q.Include(u => u.Profile)   ← include applied
-   └─ query.FirstOrDefaultAsync(u => u.Id == 5)
-
-6. SQL:
-   SELECT u.*, up.*
-   FROM Users u
-   LEFT JOIN UserProfiles up ON up.UserId = u.Id
-   WHERE u.Id = 5
-
-7. UserService maps result → UserWithProfileDto
-8. Controller returns 200 OK with UserWithProfileDto
-```
-
----
-
-## 6️⃣ New DTOs in This Step
-
-### `UserWithProfileDto`
-```csharp
-public class UserWithProfileDto
-{
-    public int        Id              { get; set; }
-    public string     FullName        { get; set; }
-    public string     Email           { get; set; }
-    public string     LoadingStrategy { get; set; }  // explains which strategy was used
-    public ProfileDto? Profile        { get; set; }
-}
-
-public class ProfileDto
-{
-    public string  Bio       { get; set; }
-    public string? AvatarUrl { get; set; }
-    public string? GitHubUrl { get; set; }
-}
-```
-
-### `UserWithTeamsDto`
-```csharp
-public class UserWithTeamsDto
-{
-    public int    Id       { get; set; }
-    public string FullName { get; set; }
-    public string Email    { get; set; }
-    public IEnumerable<TeamDto> Teams { get; set; }
-}
-
-public class TeamDto
-{
-    public int      Id       { get; set; }
-    public string   Name     { get; set; }
-    public string   Role     { get; set; }
-    public DateTime JoinedAt { get; set; }
-}
-```
-
----
-
-## 7️⃣ API Endpoints Added
-
-| Method | Endpoint | Strategy | SQL Queries |
-|--------|----------|----------|-------------|
-| `GET` | `/api/users/{id}/with-profile` | Eager — `Include()` | 1 with JOIN |
-| `GET` | `/api/users/{id}/with-teams` | Eager — `Include()` + `ThenInclude()` | 1 with JOINs |
-| `GET` | `/api/users/{id}/explicit-load` | Explicit — `LoadAsync()` | 3 separate |
-| `GET` | `/api/users/{id}/lazy-load` | Lazy — property access | 2 separate |
-
----
-
-## 8️⃣ `Reference` vs `Collection` in Explicit Loading
-
-| Method | Used for | Example |
-|--------|----------|---------|
-| `.Reference()` | Single navigation property (one entity) | `user.Profile` |
-| `.Collection()` | Collection navigation property (many entities) | `user.TeamMembers` |
+`QueryParameters` is a single object that carries all filter/sort/page options:
 
 ```csharp
-// Reference — loads one related entity
-_context.Entry(user).Reference(u => u.Profile).LoadAsync();
-
-// Collection — loads many related entities
-_context.Entry(user).Collection(u => u.TeamMembers).LoadAsync();
+public class QueryParameters
+{
+    public int    PageNumber    { get; set; } = 1;
+    public int    PageSize      { get; set; } = 10;  // max 50
+    public string? SearchTerm   { get; set; }        // title/description search
+    public string? Status       { get; set; }        // filter by status
+    public string? Priority     { get; set; }        // filter by priority
+    public string  SortBy       { get; set; } = "CreatedAt";
+    public bool    SortDescending { get; set; } = true;
+}
 ```
+
+### How it's used in the paged query
+```csharp
+IQueryable<TaskItem> query = _dbSet.Where(t => t.ProjectId == projectId);
+
+// Apply search
+if (!string.IsNullOrEmpty(parameters.SearchTerm))
+    query = query.Where(t => t.Title.Contains(parameters.SearchTerm));
+
+// Apply status filter
+if (!string.IsNullOrEmpty(parameters.Status))
+    query = query.Where(t => t.Status == parameters.Status);
+
+// Count BEFORE pagination (total matching records)
+var totalCount = await query.CountAsync();
+
+// Apply sort
+query = parameters.SortBy switch
+{
+    "title"  => parameters.SortDescending
+                    ? query.OrderByDescending(t => t.Title)
+                    : query.OrderBy(t => t.Title),
+    _        => parameters.SortDescending
+                    ? query.OrderByDescending(t => t.CreatedAt)
+                    : query.OrderBy(t => t.CreatedAt)
+};
+
+// Apply pagination
+var items = await query
+    .Skip((parameters.PageNumber - 1) * parameters.PageSize)
+    .Take(parameters.PageSize)
+    .ToListAsync();
+```
+
+---
+
+## 8️⃣ PagedResult\<T\> — Reusable Response Wrapper
+
+```csharp
+public class PagedResult<T>
+{
+    public IEnumerable<T> Items      { get; set; }   // the data
+    public int TotalCount            { get; set; }   // total matching records in DB
+    public int PageNumber            { get; set; }   // current page
+    public int PageSize              { get; set; }   // items per page
+    public int TotalPages  => (int)Math.Ceiling(TotalCount / (double)PageSize);
+    public bool HasPrevious => PageNumber > 1;
+    public bool HasNext     => PageNumber < TotalPages;
+}
+```
+
+### Example response
+```json
+{
+  "items": [...],
+  "totalCount": 47,
+  "pageNumber": 2,
+  "pageSize": 10,
+  "totalPages": 5,
+  "hasPrevious": true,
+  "hasNext": true
+}
+```
+
+---
+
+## 9️⃣ Full Layer Flow
+
+```
+GET /api/tasks/project/1/paged?pageNumber=1&pageSize=2&status=Todo&sortBy=title
+         │
+         ▼
+TasksController.GetPaged(projectId: 1, parameters: QueryParameters)
+         │  calls
+         ▼
+TaskService.GetPagedAsync(parameters, projectId: 1)
+         │  calls
+         ▼
+TaskRepository.GetPagedTasksAsync(parameters, projectId: 1)
+         │
+         ├── query = _dbSet.Where(t => t.ProjectId == 1 && !t.IsDeleted)
+         ├── query = query.Where(t => t.Status == "Todo")
+         ├── totalCount = query.CountAsync()   → 3
+         ├── query = query.OrderBy(t => t.Title)
+         ├── query = query.Skip(0).Take(2)
+         └── items = query.ToListAsync()
+         │
+         SQL:
+         SELECT * FROM TaskItems
+         WHERE ProjectId = 1 AND IsDeleted = 0 AND Status = 'Todo'
+         ORDER BY Title ASC
+         OFFSET 0 ROWS FETCH NEXT 2 ROWS ONLY
+         │
+         ▼
+TaskService maps items → IEnumerable<TaskResponseDto>
+TaskService wraps in PagedResult<TaskResponseDto>
+         │
+         ▼
+Controller returns 200 OK with PagedResult
+```
+
+---
+
+## 🧪 Test JSONs
+
+### POST /api/tasks — Create Tasks (run all 5 to populate data)
+
+```json
+{
+  "title": "Design Login Page",
+  "description": "Create responsive login page with validation",
+  "priority": "High",
+  "projectId": 1,
+  "reporterId": 1,
+  "assigneeId": 1,
+  "sprintId": null
+}
+```
+
+```json
+{
+  "title": "Fix Payment Bug",
+  "description": "Payment fails on checkout for international cards",
+  "priority": "High",
+  "projectId": 1,
+  "reporterId": 1,
+  "assigneeId": 2,
+  "sprintId": null
+}
+```
+
+```json
+{
+  "title": "Write Unit Tests",
+  "description": "Add unit tests for auth module",
+  "priority": "Medium",
+  "projectId": 1,
+  "reporterId": 1,
+  "assigneeId": null,
+  "sprintId": null
+}
+```
+
+```json
+{
+  "title": "Update Documentation",
+  "description": "Update API docs with new endpoints",
+  "priority": "Low",
+  "projectId": 1,
+  "reporterId": 2,
+  "assigneeId": null,
+  "sprintId": null
+}
+```
+
+```json
+{
+  "title": "Setup CI/CD Pipeline",
+  "description": "Configure GitHub Actions for automated deployment",
+  "priority": "Medium",
+  "projectId": 1,
+  "reporterId": 1,
+  "assigneeId": 1,
+  "sprintId": null
+}
+```
+
+### PUT /api/tasks/1 — Update Status to InProgress
+```json
+{
+  "title": "Design Login Page",
+  "description": "Create responsive login page with validation",
+  "status": "InProgress",
+  "priority": "High",
+  "assigneeId": 1,
+  "sprintId": null
+}
+```
+
+---
+
+## 🌐 GET Endpoints to Test
+
+| Endpoint | Demonstrates | Expected Result |
+|----------|-------------|-----------------|
+| `GET /api/tasks/1` | Basic get by id | Single task |
+| `GET /api/tasks/by-status/Todo` | WHERE filter | Tasks with Status=Todo |
+| `GET /api/tasks/by-status/InProgress` | WHERE filter | Tasks with Status=InProgress |
+| `GET /api/tasks/by-priority/High` | WHERE filter | High priority tasks |
+| `GET /api/tasks/project/1/summaries` | SELECT projection | Lightweight task list |
+| `GET /api/tasks/project/1/grouped-by-status` | GROUP BY | Tasks grouped by status |
+| `GET /api/tasks/project/1/stats` | COUNT aggregation | Total, completed, rate |
+| `GET /api/tasks/project/1/paged` | Default pagination | Page 1, 10 items |
+| `GET /api/tasks/project/1/paged?pageNumber=1&pageSize=2` | Custom page size | 2 items per page |
+| `GET /api/tasks/project/1/paged?status=Todo` | Filter + paginate | Only Todo tasks |
+| `GET /api/tasks/project/1/paged?priority=High&sortBy=title&sortDescending=false` | Sort + paginate | High priority, sorted A-Z |
+| `GET /api/tasks/project/1/paged?searchTerm=login` | Search + paginate | Tasks with "login" in title |
 
 ---
 
@@ -374,72 +455,96 @@ _context.Entry(user).Collection(u => u.TeamMembers).LoadAsync();
 
 | Rule | Reason |
 |------|--------|
-| Controller only calls Service | Never inject UnitOfWork or Repository into Controller |
-| Service only calls UnitOfWork | Never query DbContext directly from Service |
-| Use Eager Loading in production | Avoids N+1 queries — predictable performance |
-| Mark all navigation properties `virtual` | Required for Lazy Loading proxies to work |
-| Use `Reference()` for single nav props | `Collection()` is for ICollection properties only |
-| `ThenInclude()` chains a second level | Always comes after `Include()`, not standalone |
-| Avoid Lazy Loading in loops | N+1 problem destroys performance |
+| Always `OrderBy` before `Skip/Take` | Without ordering pagination is unreliable |
+| Count BEFORE Skip/Take | Count after pagination gives you page size, not total |
+| Use `Select` to project, don't load full entity when not needed | Better performance |
+| Cap `PageSize` with a max value | Prevent clients requesting thousands of rows |
+| Build queries as `IQueryable<T>` before calling `ToListAsync()` | Query is only sent to DB when materialized |
+| Chain `Where()` calls for dynamic filters | EF Core combines them into one SQL `WHERE` |
+
+---
+
+## 💡 IQueryable vs IEnumerable
+
+```csharp
+// IQueryable<T> — query NOT yet sent to DB
+// Each chained method adds to the SQL query
+IQueryable<TaskItem> query = _dbSet.Where(t => t.ProjectId == 1);
+query = query.Where(t => t.Status == "Todo");
+query = query.OrderBy(t => t.Title);
+// Still no SQL sent!
+
+// ToListAsync() — NOW the SQL is sent to DB
+var items = await query.ToListAsync();
+// SQL: SELECT * FROM TaskItems WHERE ProjectId=1 AND Status='Todo' ORDER BY Title
+
+// IEnumerable<T> — data already in memory
+// Filtering happens in C#, not SQL — less efficient
+var items = await _dbSet.ToListAsync();         // ALL rows loaded from DB ❌
+var filtered = items.Where(t => t.Status == "Todo");  // filtered in C# memory ❌
+```
+
+> 💡 Always build your complete query as `IQueryable<T>` before calling
+> `ToListAsync()` — this way EF Core sends ONE optimized SQL query.
 
 ---
 
 ## 🚀 How to Run
 
 ```bash
-# Install lazy loading package
-dotnet add package Microsoft.EntityFrameworkCore.Proxies
-
 # No new migrations needed — no model changes
 dotnet build
 dotnet run
 
-# Test in Swagger
-# POST /api/users first to create a user
-# Then test:
-# GET /api/users/1/with-profile
-# GET /api/users/1/with-teams
-# GET /api/users/1/explicit-load
-# GET /api/users/1/lazy-load
+# Step 1: Create a project first (needed for projectId = 1)
+# POST /api/projects  (if you have the endpoint)
+# Or directly insert via SQL Server Management Studio
+
+# Step 2: Create tasks using the POST JSONs above
+
+# Step 3: Test all GET endpoints
 ```
 
 ---
 
-## ✅ Folder Structure After Step 6
+## ✅ Folder Structure After Step 7
 
 ```
 TaskManagerAPI/
 ├── Controllers/
-│   └── UsersController.cs              ← Updated (4 new endpoints, calls Service only)
+│   ├── UsersController.cs
+│   └── TasksController.cs                   ← NEW
 ├── DTOs/
-│   └── User/
-│       ├── UserWithProfileDto.cs       ← NEW
-│       └── UserWithTeamsDto.cs         ← NEW
-├── Models/
-│   └── *.cs                            ← All navigation properties marked virtual
+│   ├── Common/
+│   │   ├── QueryParameters.cs               ← NEW
+│   │   └── PagedResult.cs                   ← NEW
+│   └── Task/
+│       ├── TaskResponseDto.cs               ← NEW
+│       ├── CreateTaskDto.cs                 ← NEW
+│       └── UpdateTaskDto.cs                 ← NEW
 ├── Repositories/
 │   ├── Interfaces/
-│   │   ├── IRepository.cs              ← Updated (GetByIdWithIncludesAsync)
-│   │   └── IUserRepository.cs         ← Updated (loading methods)
+│   │   ├── IRepository.cs                   ← Updated (LINQ methods)
+│   │   └── ITaskRepository.cs               ← NEW
 │   └── Implementations/
-│       ├── Repository.cs               ← Updated (include pipeline)
-│       └── UserRepository.cs          ← Updated (Eager + Explicit methods)
+│       ├── Repository.cs                    ← Updated (LINQ implementations)
+│       └── TaskRepository.cs               ← NEW
 ├── Services/
 │   ├── Interfaces/
-│   │   └── IUserService.cs             ← Updated (loading methods)
+│   │   └── ITaskService.cs                  ← NEW
 │   └── Implementations/
-│       └── UserService.cs              ← Updated (loading implementations)
-└── Extensions/
-    └── ServiceCollectionExtensions.cs  ← Updated (UseLazyLoadingProxies)
+│       └── TaskService.cs                   ← NEW
+└── UnitOfWork/
+    ├── IUnitOfWork.cs                       ← Updated (Tasks added)
+    └── UnitOfWork.cs                        ← Updated (Tasks added)
 ```
 
 ---
 
-## ✅ What's Next — Step 07: Querying Data with LINQ
+## ✅ What's Next — Step 08: Tracking
 In the next step we will:
-- **Filter** with `Where()`
-- **Project** with `Select()`
-- **Sort** with `OrderBy()` / `OrderByDescending()`
-- **Group** with `GroupBy()`
-- **Aggregate** with `Sum()`, `Count()`, `Average()`
-- **Paginate** with `Skip()` / `Take()` via `PagedResult<T>`
+- Deep dive into **Change Tracking** — how EF Core watches entities
+- **AsNoTracking()** — when and why to disable tracking
+- **EntityState** — Added, Modified, Deleted, Unchanged, Detached
+- **AsNoTrackingWithIdentityResolution()** — middle ground
+- Add `AsNoTracking` to read-only repository methods
