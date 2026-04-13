@@ -84,4 +84,63 @@ public class Repository<T> : IRepository<T> where T : class
 
     public void RemoveRange(IEnumerable<T> entities)
         => _dbSet.RemoveRange(entities);
+
+    // LINQ: Where
+    // Filters rows using a predicate expression
+    public async Task<IEnumerable<T>> WhereAsync(
+        Expression<Func<T, bool>> predicate
+    )
+    {
+        return await _dbSet
+                .Where(predicate)
+                .ToListAsync();
+    }
+
+    // LINQ: Where + OrderBy
+    // Filters and Sorts in one query
+    public async Task<IEnumerable<T>> WhereOrderedAsync(
+        Expression<Func<T, bool>> predicate,
+        Expression<Func<T, object>> OrderBy,
+        bool descending = false
+    )
+    {
+        var query = _dbSet.Where(predicate);
+        query = descending ? query.OrderByDescending(OrderBy)
+                        : query.OrderBy(OrderBy);
+
+        return await query.ToListAsync();
+    }
+
+    // LINQ: Paginaton (Skip / Take)
+    // Returns a page of results + total count for pagination metadata
+    public async Task<(IEnumerable<T> Items, int TotalCount)> GetPagedAsync(
+        int pageNumber,
+        int pageSize,
+        Expression<Func<T, bool>>? predicate = null,
+        Expression<Func<T, object>>? orderBy = null,
+        bool descending = false
+    )
+    {
+        IQueryable<T> query = _dbSet;
+
+        if(predicate is not null)
+            query = query.Where(predicate);
+        
+        // COUNT before pagination - total matching records
+        var totalCount = await query.CountAsync();
+
+        if(orderBy is not null)
+            query = descending 
+                ? query.OrderByDescending(orderBy)
+                : query.OrderBy(orderBy);
+        
+        // Skip / Take - apply pagination
+        // Skip = (pageNumber - 1) * pageSize
+        var items = await query
+            .Skip((pageNumber-1)*pageSize)
+            .Take(pageSize)
+            .ToListAsync();
+
+        return (items, totalCount);
+    }
 }

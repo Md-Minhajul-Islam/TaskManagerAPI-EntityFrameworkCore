@@ -41,6 +41,7 @@ namespace TaskManagerAPI.Extensions
             this IServiceCollection services)
         {
             services.AddScoped<IUserService, UserService>();
+            services.AddScoped<ITaskService, TaskService>();
             // Every new service gets registered here — Program.cs stays clean
             return services;
     }
