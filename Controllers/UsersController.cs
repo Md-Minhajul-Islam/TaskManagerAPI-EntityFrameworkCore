@@ -93,4 +93,29 @@ public class UsersController : ControllerBase
         var result = await _userService.GetWithLazyLoadAsync(id);
         return result is null ? NotFound() : Ok(result);
     }
+
+    // GET: api/users/no-tracking
+    // Demonstrates: AsNoTracking — faster read-only query
+    [HttpGet("no-tracking")]
+    public async Task<IActionResult> GetAllNoTracking()
+    {
+        var users = await _userService.GetAllNoTrackingAsync();
+        return Ok(users);
+    }
+
+    // GET: api/users/5/entity-state-demo
+    // Demonstrates: EntityState lifecycle — Added, Modified, Deleted, Unchanged, Detached
+    [HttpGet("{id}/entity-state-demo")]
+    public async Task<IActionResult> EntityStateDemo(int id)
+    {
+        try
+        {
+            var demo = await _userService.GetEntityStateDemoAsync(id);
+            return Ok(demo);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return NotFound(new { message = ex.Message });
+        }
+    }
 }

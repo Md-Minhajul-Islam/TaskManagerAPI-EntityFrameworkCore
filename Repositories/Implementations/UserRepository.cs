@@ -82,6 +82,16 @@ public class UserRepository : Repository<User>, IUserRepository
             .LoadAsync();
 
 
+    // Returns the current EntityState of a tracked entity
+    // States: Added, Modified, Deleted, Unchanged, Detached
+    public EntityState GetEntityState(User user)
+        => _context.Entry(user).State;
+
+    // Detaches an entity from the DbContext
+    // After detach: EF Core no longer tracks it
+    // EntityState becomes Detached
+    public void DetachEntity(User user)
+        => _context.Entry(user).State = EntityState.Detached;
 
 }
 

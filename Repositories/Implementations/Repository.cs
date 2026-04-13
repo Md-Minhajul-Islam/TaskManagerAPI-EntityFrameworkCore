@@ -143,4 +143,39 @@ public class Repository<T> : IRepository<T> where T : class
 
         return (items, totalCount);
     }
+
+    // ── AsNoTracking ───────────────────────────────────────────────────────────
+    // AsNoTracking() tells EF Core:
+    //   "Don't watch this entity for changes — I'm only reading it"
+    // Benefit: faster queries, less memory — no change tracking snapshot created
+    // Use for: GET endpoints, reports, any read-only operation
+    public async Task<IEnumerable<T>> GetAllAsNoTrackingAsync()
+    => await _dbSet
+        .AsNoTracking()         // ← disables change tracking
+        .ToListAsync();
+
+    public async Task<T?> GetByIdAsNoTrackingAsync(int id)
+        => await _dbSet
+            .AsNoTracking()
+            .FirstOrDefaultAsync(e => EF.Property<int>(e, "Id") == id);
+
+    public async Task<IEnumerable<T>> FindAsNoTrackingAsync(
+        Expression<Func<T, bool>> predicate)
+        => await _dbSet
+            .AsNoTracking()
+            .Where(predicate)
+            .ToListAsync();
+
+    // ── AsNoTrackingWithIdentityResolution ─────────────────────────────────────
+    // Middle ground between tracking and no tracking:
+    //   - Does NOT track for change detection (fast like AsNoTracking)
+    //   - BUT ensures the same entity is only materialized once
+    //     (useful when related entities appear multiple times in results)
+    // Example: loading Tasks with their Project
+    //   Without identity resolution: Project object duplicated for each Task
+    //   With identity resolution:    Project object reused across all Tasks
+    public async Task<IEnumerable<T>> GetAllAsNoTrackingWithIdentityResolutionAsync()
+        => await _dbSet
+            .AsNoTrackingWithIdentityResolution()
+            .ToListAsync();
 }

@@ -1,3 +1,4 @@
+using Microsoft.EntityFrameworkCore;
 using TaskManagerAPI.Models;
 
 namespace TaskManagerAPI.Repositories.Interfaces;
@@ -17,4 +18,8 @@ public interface IUserRepository : IRepository<User>
     // Explicit Loading
     Task LoadProfileAsync(User user);
     Task LoadTeamsAsync(User user);
+
+    // ── Tracking / EntityState ─────────────────────────────────
+    EntityState GetEntityState(User user);
+    void DetachEntity(User user);
 }
