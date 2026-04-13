@@ -17,4 +17,8 @@ public interface IUserService
     Task<UserWithProfileDto?>  GetWithExplicitLoadAsync(int id);
     Task<UserWithProfileDto?>  GetWithLazyLoadAsync(int id);
 
+
+    // ── Tracking Demo ──────────────────────────────────────────
+    Task<EntityStateDemo> GetEntityStateDemoAsync(int id);
+    Task<IEnumerable<UserResponseDto>> GetAllNoTrackingAsync();
 }

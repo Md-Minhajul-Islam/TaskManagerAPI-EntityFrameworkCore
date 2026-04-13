@@ -50,5 +50,17 @@ namespace TaskManagerAPI.Repositories.Interfaces
             Expression<Func<T, object>>? orderBy = null,
             bool descending = false
         );
+
+        // Tracking
+        // Read-only queries - EF Core does NOT track these entities
+        // Faster because no snapshot is created
+        Task<IEnumerable<T>> GetAllAsNoTrackingAsync();
+        Task<T?>             GetByIdAsNoTrackingAsync(int id);
+        Task<IEnumerable<T>> FindAsNoTrackingAsync(
+                         Expression<Func<T, bool>> predicate);
+
+        // Middle ground - no tracking but handles duplicates entites
+        // Use when query return the same entity multiple times
+        Task<IEnumerable<T>> GetAllAsNoTrackingWithIdentityResolutionAsync();
     }
 }

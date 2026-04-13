@@ -189,4 +189,98 @@ public class UserService : IUserService
         IsActive = user.IsActive,
         CreatedAt = user.CreatedAt
     };
+
+    // AsNoTracking
+    public async Task<IEnumerable<UserResponseDto>> GetAllNoTrackingAsync()
+    {
+        // AsNoTracking — EF Core loads data but does NOT watch for changes
+        // Faster than regular GetAllAsync because no snapshot is created
+        var users = await _unitOfWork.Users.GetAllAsNoTrackingAsync();
+        return users.Select(MapToResponse);
+    }
+
+    // EntityState Demo
+    public async Task<EntityStateDemo> GetEntityStateDemoAsync(int id)
+    {
+        // state 1: Load entity
+        // After loading, EF core treacks it as Unchanged
+        var user = await _unitOfWork.Users.GetByIdAsync(id);
+        if(user is null)
+            throw new InvalidOperationException($"User {id} not found.");
+        
+        var stateAfterLoad = _unitOfWork.Users.GetEntityState(user);
+        // EntityState = Unchanged ← EF Core is watching but nothing changed
+
+        // State 2: Modify a property
+        // Change Tracking detects the modification automatically
+        var originalName  = user.FullName;
+        user.FullName    += " (modified)";
+
+        var stateAfterChange = _unitOfWork.Users.GetEntityState(user);
+        // EntityState = Modified ← EF Core detected the property change
+
+        // Restore original value — we don't actually want to save this
+        user.FullName = originalName;
+
+        // ── State 3: Detach entity ─────────────────────────────────────────────
+        // After detaching, EF Core no longer tracks this entity
+        _unitOfWork.Users.DetachEntity(user);
+
+        var stateAfterDetach = _unitOfWork.Users.GetEntityState(user);
+        // EntityState = Detached ← EF Core no longer watches this entity
+    
+        // state 4: add a new entity (without saving)
+            var newUser = new User
+        {
+            FullName = "Demo User",
+            Email    = $"demo_{Guid.NewGuid()}@test.com",
+            Role     = "Member"
+        };
+
+        await _unitOfWork.Users.AddAsync(newUser);
+
+        var stateAfterAdd = _unitOfWork.Users.GetEntityState(newUser);
+        // EntityState = Added ← queued for INSERT but not saved yet
+
+        // Detach the new user so we don't accidentally save it
+        _unitOfWork.Users.DetachEntity(newUser);
+
+        // ── State 5: Mark existing entity for deletion (without saving) ────────
+        // Re-load the original user since we detached it
+        var userForDelete = await _unitOfWork.Users.GetByIdAsync(id);
+        if (userForDelete is not null)
+        {
+            _unitOfWork.Users.Remove(userForDelete);
+            var stateAfterRemove = _unitOfWork.Users.GetEntityState(userForDelete);
+
+            // Detach to cancel the delete — we don't actually want to delete
+            _unitOfWork.Users.DetachEntity(userForDelete);
+
+            return new EntityStateDemo
+            {
+                UserId          = id,
+                FullName        = originalName,
+                StateAfterLoad   = stateAfterLoad.ToString(),
+                StateAfterChange = stateAfterChange.ToString(),
+                StateAfterDetach = stateAfterDetach.ToString(),
+                StateAfterAdd    = stateAfterAdd.ToString(),
+                StateAfterRemove = stateAfterRemove.ToString(),
+                Explanation      = "EntityState shows what EF Core will do at SaveChanges: " +
+                                "Added=INSERT, Modified=UPDATE, Deleted=DELETE, " +
+                                "Unchanged=nothing, Detached=not tracked"
+            };
+        }
+
+        return new EntityStateDemo
+        {
+            UserId           = id,
+            FullName         = originalName,
+            StateAfterLoad   = stateAfterLoad.ToString(),
+            StateAfterChange = stateAfterChange.ToString(),
+            StateAfterDetach = stateAfterDetach.ToString(),
+            StateAfterAdd    = stateAfterAdd.ToString(),
+            StateAfterRemove = "Could not demonstrate",
+            Explanation      = "EntityState lifecycle demonstrated"
+        };
+    }
 }
