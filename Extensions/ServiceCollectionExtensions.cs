@@ -16,13 +16,18 @@ namespace TaskManagerAPI.Extensions
         {
             services.AddDbContext<AppDbContext>(options =>
             options.UseSqlServer(
-                configuration.GetConnectionString("DefaultConnection"))
-                    // ── Lazy Loading ───────────────────────────────────────
-                   // UseLazyLoadingProxies() wraps every entity in a proxy
-                   // Navigation properties are loaded automatically when accessed
-                   // Requires: virtual keyword on ALL navigation properties
-                    .UseLazyLoadingProxies()
-                    .LogTo(Console.WriteLine, LogLevel.Information));
+                configuration.GetConnectionString("DefaultConnection"),
+                sqlOptions =>
+                {
+                  // Set Split Query as global default for all queries (Has pros and cons)
+                  sqlOptions.UseQuerySplittingBehavior(QuerySplittingBehavior.SplitQuery);
+                })
+                // ── Lazy Loading ───────────────────────────────────────
+                // UseLazyLoadingProxies() wraps every entity in a proxy
+                // Navigation properties are loaded automatically when accessed
+                // Requires: virtual keyword on ALL navigation properties
+                .UseLazyLoadingProxies()
+                .LogTo(Console.WriteLine, LogLevel.Information));
 
             return services;
         }

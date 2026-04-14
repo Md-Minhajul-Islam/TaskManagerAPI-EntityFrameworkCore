@@ -27,4 +27,7 @@ public interface IUserService
     Task<TransactionDemo> BulkCreateUsersAsync(List<CreateUserDto> dtos);
     Task<TransactionDemo> TransactionWithRollbackDemoAsync();
     Task<TransactionDemo> SavepointDemoAsync();
+    // Performance Demo
+    Task<object> GetPerformanceDemoAsync();
+
 }

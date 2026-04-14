@@ -64,14 +64,34 @@ public class UserConfiguration : IEntityTypeConfiguration<User>
             .HasColumnName("UpdatedAt");
 
         //   ── Unique Index on Email ──────────────────────────────────
-        // builder.HasIndex(u => u.Email)
-        //     .IsUnique()
-        //     .HasDatabaseName("IX_Users_Email");
+        
+        // single index - speeds up filtering by role
+        builder.HasIndex(u => u.Role)
+            .HasDatabaseName("IX_Users_Role");
+
+        
+        builder.HasIndex(u => u.Email)
+            .IsUnique()
+            .HasDatabaseName("IX_Users_Email");
 
         // ── Index on IsActive (for filtering active users) ─────────
         builder.HasIndex(u => u.IsActive)
             .HasDatabaseName("IX_Users_IsActive");
+
+        
+        // Composite index - sppeds up queries filltering by BOTH IsActive and Role
+        // e.g., "Get all active admins"
+        // SQL: WHERE IsActive = 1 AND Role = 'Admin'
+        builder.HasIndex(u => new {u.IsActive, u.Role})
+            .HasDatabaseName("IX_Users_IsActive_Role");
     
+        // Filtered index - only indexes active users
+        // Smaller index = faster loopkups when filtering 
+        builder.HasIndex(u => u.IsActive)
+            .HasFilter("[IsActive] = 1")
+            .HasDatabaseName("IX_Users_IsActive_Filtered");
+
+
 
         // ── Alternate Key ──────────────────────────────────────────────────────────
         // An Alternate Key is different from a Unique Index:

@@ -272,6 +272,31 @@ public class UserService : IUserService
             StateAfterRemove = "Could not demonstrate",
             Explanation      = "EntityState lifecycle demonstrated"
         };
+
+    }
+
+    public async Task<object> GetPerformanceDemoAsync()
+    {
+        var users = await _unitOfWork.Users.GetAllAsNoTrackingAsync();
+
+        var list = users.ToList();
+
+        return new
+        {
+            TotalUsers   = list.Count,
+            ActiveUsers  = list.Count(u => u.IsActive),
+            ByRole       = list
+                            .GroupBy(u => u.Role)
+                            .Select(g => new { Role = g.Key, Count = g.Count() }),
+            Optimizations = new[]
+            {
+                "AsNoTracking — no change tracking snapshot created",
+                "Compiled queries on GetByEmail, GetActiveUsers, GetByRole",
+                "Composite index on IsActive + Role columns",
+                "Filtered index on IsActive = 1 — smaller index",
+                "AsSplitQuery on GetWithAllRelatedAsync — no cartesian explosion"
+            }
+        };
     }
 
     // Transaction: Bulk create users atomically 

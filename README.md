@@ -294,8 +294,13 @@ await using var transaction = await _unitOfWork.BeginTransactionAsync();
 ## 🚀 How to Run
 
 ```bash
-# No new migrations — no model changes
-dotnet build
+# Create migration for new indexes
+dotnet ef migrations add AddPerformanceIndexes --output-dir Data/Migrations
+
+# Apply
+dotnet ef database update
+
+# Run
 dotnet run
 
 # Test in Swagger:
