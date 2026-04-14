@@ -138,5 +138,70 @@ public class UserRepository : Repository<User>, IUserRepository
     public void DetachEntity(User user)
         => _context.Entry(user).State = EntityState.Detached;
 
+
+    // ── FromSqlRaw ────────────────────────────────────────────────────────────
+    // Executes raw SQL and maps results to User entities
+    // EF Core TRACKS these entities (change tracking is ON)
+    // Use when you need full entity tracking after the query
+    public async Task<IEnumerable<User>> GetByRoleRawSqlAsync(string role)
+    {
+        return await _dbSet
+            .FromSqlRaw("SELECT * FROM Users WHERE Role = {0}", role)
+            // {0} = parameterized — safe from SQL injection
+            // EF Core replaces {0} with a proper SQL parameter
+            .ToListAsync();
+    
+    }
+
+    // FromSqlRaw with named SQL parameter
+    public async Task<User?> GetByEmailRawSqlAsync(string email)
+        => await _dbSet
+            .FromSqlRaw(
+                "SELECT * FROM Users WHERE Email = {0}",
+                email)
+            .FirstOrDefaultAsync();
+    
+
+    // ── ExecuteSqlRaw ──────────────────────────────────────────────────────────
+    // Executes raw SQL for commands that DON'T return entities
+    // Returns: number of rows affected
+    // Use for UPDATE, DELETE, INSERT when you don't need tracked entities back
+    public async Task<int> DeactivateUserRawSqlAsync(int userId)
+    {
+        return await _context.Database
+            .ExecuteSqlRawAsync(
+                "UPDATE Users SET IsActive = 0, UpdatedAt = GETUTCDATE() WHERE Id = {0}",
+                userId
+            );
+            // Returns: 1 if row was updated, 0 if not found
+    }
+
+    // Bulk update — deactivate all users with a specific role
+    public async Task<int> BulkDeactivateByRoleAsync(string role)
+        => await _context.Database
+            .ExecuteSqlRawAsync(
+                "UPDATE Users SET IsActive = 0, UpdatedAt = GETUTCDATE() WHERE Role = {0}",
+                role);
+            // Returns: number of rows affected
+
+    
+    // ── Stored Procedures ──────────────────────────────────────────────────────
+    // Call a stored procedure that RETURNS rows → use FromSqlRaw
+    public async Task<IEnumerable<User>> GetActiveUsersByRoleSpAsync(string role)
+        => await _dbSet
+            .FromSqlRaw("EXEC sp_GetActiveUsersByRole {0}", role)
+            .ToListAsync();
+        
+    
+    // Call a stored procedure that does NOT return rows → use ExecuteSqlRaw
+    public async Task<int> UpdateUserRoleSpAsync(int userId, string newRole)
+        => await _context.Database
+            .ExecuteSqlRawAsync(
+                "EXEC sp_UpdateUserRole {0}, {1}",
+                userId, newRole
+            );
+
+
+
 }
 

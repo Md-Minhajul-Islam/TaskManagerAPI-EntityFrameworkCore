@@ -1,280 +1,333 @@
-# TaskManagerAPI — Step 10: Transactions
+# TaskManagerAPI — Step 11: Raw SQL
 
 ## 📌 What This Step Covers
-- What is a Database Transaction
-- BeginTransaction — starting an explicit transaction
-- Commit — saving all changes permanently
-- Rollback — undoing all changes on failure
-- Savepoints — partial rollbacks within a transaction
-- Transaction support in UnitOfWork
+- FromSqlRaw — execute raw SELECT SQL that returns entities
+- ExecuteSqlRaw — execute raw UPDATE/DELETE/INSERT SQL
+- Stored Procedures — create and call via EF Core
+- When to use raw SQL vs LINQ
+- SQL injection protection with parameterized queries
 
 ---
 
-## 🧠 What is a Transaction?
+## 🧠 Why Raw SQL?
 
-A transaction groups multiple database operations into a **single atomic unit**.
-Either ALL operations succeed together, or NONE of them are saved.
+EF Core's LINQ is powerful but sometimes you need raw SQL:
 
 ```
-Without Transaction:
-  Operation 1: INSERT User 1  ✅ saved
-  Operation 2: INSERT User 2  ✅ saved
-  Operation 3: INSERT User 3  ❌ fails
-  Result: User 1 and 2 saved, User 3 missing = INCONSISTENT DATA ❌
+Use LINQ when:
+  ✅ Standard CRUD operations
+  ✅ Simple filtering and sorting
+  ✅ Readable, maintainable code
 
-With Transaction:
-  Operation 1: INSERT User 1  ✅ staged
-  Operation 2: INSERT User 2  ✅ staged
-  Operation 3: INSERT User 3  ❌ fails → ROLLBACK
-  Result: NOTHING saved = data stays consistent ✅
-```
-
-### Real-world analogy
-A bank transfer:
-```
-BEGIN TRANSACTION
-  Deduct $100 from Account A   ← staged
-  Add    $100 to   Account B   ← staged
-COMMIT                         ← both happen together ✅
-
-If anything fails:
-ROLLBACK                       ← neither happens ✅
+Use Raw SQL when:
+  ✅ Complex queries LINQ can't express well
+  ✅ Performance-critical queries needing specific SQL hints
+  ✅ Calling existing stored procedures
+  ✅ Bulk UPDATE/DELETE without loading entities
+  ✅ Database-specific features (window functions, CTEs etc.)
 ```
 
 ---
 
-## 1️⃣ Transaction Lifecycle
+## 1️⃣ FromSqlRaw
 
-```
-BeginTransactionAsync()
-        │
-        ▼ transaction is open — nothing committed yet
-        │
-        ├── SaveChangesAsync()    ← stages INSERT/UPDATE/DELETE
-        ├── SaveChangesAsync()    ← stages more operations
-        │
-        ├── CommitAsync()         ← ALL staged changes go to DB permanently ✅
-        │         OR
-        └── RollbackAsync()       ← ALL staged changes are undone ❌
-```
+`FromSqlRaw` executes a raw SQL `SELECT` and maps results to **tracked entities**.
 
----
-
-## 2️⃣ IUnitOfWork — Transaction Methods
-
+### Basic usage
 ```csharp
-public interface IUnitOfWork : IDisposable
+// Simple raw SQL
+_dbSet.FromSqlRaw("SELECT * FROM Users WHERE Role = {0}", role)
+
+// {0} = SQL parameter — EF Core replaces it safely
+// SQL Server receives: WHERE Role = @p0
+// NEVER use string interpolation: $"WHERE Role = '{role}'"  ← SQL INJECTION ❌
+```
+
+### Important rules for `FromSqlRaw`
+```csharp
+// ✅ CORRECT — parameterized (safe)
+_dbSet.FromSqlRaw("SELECT * FROM Users WHERE Role = {0}", role)
+
+// ❌ WRONG — string concatenation (SQL injection risk!)
+_dbSet.FromSqlRaw($"SELECT * FROM Users WHERE Role = '{role}'")
+
+// ✅ The SQL must SELECT all columns the entity needs
+// EF Core maps result to User entity — all columns must be present
+_dbSet.FromSqlRaw("SELECT * FROM Users WHERE Role = {0}", role)
+//                  ↑ SELECT * ensures all User properties are mapped
+
+// ✅ You can chain LINQ after FromSqlRaw
+_dbSet
+    .FromSqlRaw("SELECT * FROM Users WHERE IsActive = 1")
+    .Where(u => u.Role == "Admin")   // ← LINQ applied on top of raw SQL
+    .OrderBy(u => u.FullName)
+    .ToListAsync()
+```
+
+### With `AsNoTracking`
+```csharp
+// Read-only raw SQL query — no tracking overhead
+_dbSet
+    .FromSqlRaw("SELECT * FROM Users WHERE Role = {0}", role)
+    .AsNoTracking()
+    .ToListAsync()
+```
+
+---
+
+## 2️⃣ ExecuteSqlRaw
+
+`ExecuteSqlRaw` executes raw SQL that **does NOT return entities**.
+Used for `UPDATE`, `DELETE`, `INSERT` operations.
+Returns the number of rows affected.
+
+### Basic usage
+```csharp
+// UPDATE — deactivate a single user
+await _context.Database.ExecuteSqlRawAsync(
+    "UPDATE Users SET IsActive = 0, UpdatedAt = GETUTCDATE() WHERE Id = {0}",
+    userId);
+// Returns: 1 if updated, 0 if not found
+
+// UPDATE — bulk update all users with a role
+await _context.Database.ExecuteSqlRawAsync(
+    "UPDATE Users SET IsActive = 0, UpdatedAt = GETUTCDATE() WHERE Role = {0}",
+    role);
+// Returns: number of rows updated
+```
+
+### Why use `ExecuteSqlRaw` for bulk updates?
+```csharp
+// Without ExecuteSqlRaw — loads ALL entities then updates one by one
+var users = await _context.Users
+    .Where(u => u.Role == "Member")
+    .ToListAsync();           // ← loads 1000 users into memory ❌
+
+foreach (var user in users)
+    user.IsActive = false;    // ← 1000 individual UPDATEs ❌
+
+await _context.SaveChangesAsync();
+
+// With ExecuteSqlRaw — ONE SQL statement, nothing loaded into memory
+await _context.Database.ExecuteSqlRawAsync(
+    "UPDATE Users SET IsActive = 0 WHERE Role = {0}", "Member");
+// ← ONE UPDATE statement, zero entities in memory ✅
+```
+
+---
+
+## 3️⃣ Stored Procedures
+
+Stored Procedures are pre-compiled SQL scripts stored in the database.
+
+### Two types of stored procedures
+
+| Type | Returns | Call with |
+|------|---------|-----------|
+| Returns rows | `IEnumerable<User>` | `FromSqlRaw("EXEC sp_Name {0}", param)` |
+| No rows returned | `int` rows affected | `ExecuteSqlRaw("EXEC sp_Name {0}, {1}", p1, p2)` |
+
+### Our stored procedures
+
+#### `sp_GetActiveUsersByRole` — returns rows
+```sql
+CREATE PROCEDURE sp_GetActiveUsersByRole
+    @Role NVARCHAR(20)
+AS
+BEGIN
+    SELECT *
+    FROM   Users
+    WHERE  Role     = @Role
+      AND  IsActive = 1
+    ORDER  BY FullName;
+END
+```
+
+Called via `FromSqlRaw`:
+```csharp
+await _dbSet
+    .FromSqlRaw("EXEC sp_GetActiveUsersByRole {0}", role)
+    .ToListAsync();
+// EF Core maps each result row to a User entity ✅
+```
+
+#### `sp_UpdateUserRole` — no rows returned
+```sql
+CREATE PROCEDURE sp_UpdateUserRole
+    @UserId  INT,
+    @NewRole NVARCHAR(20)
+AS
+BEGIN
+    UPDATE Users
+    SET    Role      = @NewRole,
+           UpdatedAt = GETUTCDATE()
+    WHERE  Id = @UserId;
+END
+```
+
+Called via `ExecuteSqlRaw`:
+```csharp
+await _context.Database.ExecuteSqlRawAsync(
+    "EXEC sp_UpdateUserRole {0}, {1}",
+    userId, newRole);
+// Returns: 1 if updated, 0 if not found
+```
+
+### Creating stored procedures via migrations
+```csharp
+// In migration Up() — use migrationBuilder.Sql()
+protected override void Up(MigrationBuilder migrationBuilder)
 {
-    IUserRepository Users { get; }
+    migrationBuilder.Sql(@"
+        CREATE PROCEDURE sp_GetActiveUsersByRole
+            @Role NVARCHAR(20)
+        AS
+        BEGIN
+            SELECT * FROM Users
+            WHERE Role = @Role AND IsActive = 1
+            ORDER BY FullName;
+        END
+    ");
+}
 
-    Task<int>                  SaveChangesAsync();
-
-    // ── Transactions ───────────────────────────────────────────
-    Task<IDbContextTransaction> BeginTransactionAsync();    // start
-    Task                        CommitAsync(IDbContextTransaction transaction);   // save
-    Task                        RollbackAsync(IDbContextTransaction transaction); // undo
+// In migration Down() — drop the procedure
+protected override void Down(MigrationBuilder migrationBuilder)
+{
+    migrationBuilder.Sql("DROP PROCEDURE IF EXISTS sp_GetActiveUsersByRole");
 }
 ```
 
+> 💡 Always create stored procedures via migrations so they are version-controlled
+> and applied consistently across all environments.
+
 ---
 
-## 3️⃣ UnitOfWork — Transaction Implementations
+## 4️⃣ FromSqlRaw vs ExecuteSqlRaw — Side by Side
+
+| | `FromSqlRaw` | `ExecuteSqlRaw` |
+|--|-------------|----------------|
+| Returns | `IQueryable<T>` — tracked entities | `int` — rows affected |
+| Used for | SELECT queries | UPDATE / DELETE / INSERT |
+| Tracking | Yes (use AsNoTracking to disable) | N/A — no entities returned |
+| LINQ chainable | ✅ Yes | ❌ No |
+| Called on | `_dbSet` | `_context.Database` |
+| Stored Procs | ✅ That return rows | ✅ That don't return rows |
+
+---
+
+## 5️⃣ SQL Injection Protection
+
+Always use parameterized queries — NEVER string concatenation or interpolation.
 
 ```csharp
-// BeginTransaction — opens a transaction on the DB connection
-public async Task<IDbContextTransaction> BeginTransactionAsync()
-    => await _context.Database.BeginTransactionAsync();
-// All SaveChangesAsync() calls after this are part of THIS transaction
-// Changes are staged in the DB but not visible to other connections yet
+// ❌ DANGEROUS — SQL injection vulnerability
+var role = "Admin' OR '1'='1";  // attacker input
+_dbSet.FromSqlRaw($"SELECT * FROM Users WHERE Role = '{role}'");
+// Generates: WHERE Role = 'Admin' OR '1'='1'
+// Returns ALL users regardless of role ❌
 
-// Commit — makes all staged changes permanent
-public async Task CommitAsync(IDbContextTransaction transaction)
-    => await transaction.CommitAsync();
-// After commit: changes are visible to all DB connections ✅
-
-// Rollback — undoes all staged changes
-public async Task RollbackAsync(IDbContextTransaction transaction)
-    => await transaction.RollbackAsync();
-// After rollback: DB is exactly as it was before BeginTransaction ✅
+// ✅ SAFE — parameterized query
+_dbSet.FromSqlRaw("SELECT * FROM Users WHERE Role = {0}", role);
+// EF Core sends: WHERE Role = @p0  with value 'Admin'' OR ''1''=''1'
+// SQL Server treats the entire value as a string literal ✅
+// Returns: zero results (no role named that) ✅
 ```
 
----
-
-## 4️⃣ Scenario 1 — Bulk Create (All or Nothing)
-
+### Three safe ways to parameterize
 ```csharp
-await using var transaction = await _unitOfWork.BeginTransactionAsync();
-try
-{
-    foreach (var dto in dtos)
-    {
-        // Validate — any failure triggers rollback
-        var isUnique = await _unitOfWork.Users.IsEmailUniqueAsync(dto.Email);
-        if (!isUnique)
-            throw new InvalidOperationException($"Email '{dto.Email}' exists");
+// Option 1 — positional {0}, {1}, {2}
+_dbSet.FromSqlRaw("SELECT * FROM Users WHERE Role = {0}", role)
 
-        var user = new User { ... };
-        await _unitOfWork.Users.AddAsync(user);
+// Option 2 — SqlParameter objects
+var param = new SqlParameter("@role", role);
+_dbSet.FromSqlRaw("SELECT * FROM Users WHERE Role = @role", param)
 
-        // SaveChangesAsync inside transaction:
-        // Changes are staged in DB — NOT yet committed
-        // Still reversible if something fails later
-        await _unitOfWork.SaveChangesAsync();
-    }
-
-    // All users passed — commit everything
-    await _unitOfWork.CommitAsync(transaction);     // ← permanent ✅
-}
-catch (Exception ex)
-{
-    // One user failed — undo ALL users
-    await _unitOfWork.RollbackAsync(transaction);   // ← all undone ❌
-}
+// Option 3 — FormattableString (FromSqlInterpolated)
+_dbSet.FromSqlInterpolated($"SELECT * FROM Users WHERE Role = {role}")
+// EF Core automatically parameterizes the interpolated values ✅
 ```
-
-### Test — Success (all unique emails)
-```json
-POST /api/users/bulk-create
-[
-  { "fullName": "Bulk User 1", "email": "bulk1@app.com", "role": "Member" },
-  { "fullName": "Bulk User 2", "email": "bulk2@app.com", "role": "Member" },
-  { "fullName": "Bulk User 3", "email": "bulk3@app.com", "role": "Admin"  }
-]
-```
-Expected: `200 OK` — all 3 users created ✅
-
-### Test — Rollback (duplicate email mid-way)
-```json
-POST /api/users/bulk-create
-[
-  { "fullName": "New User 1", "email": "newbulk1@app.com", "role": "Member" },
-  { "fullName": "Duplicate",  "email": "bulk1@app.com",    "role": "Member" },
-  { "fullName": "New User 3", "email": "newbulk3@app.com", "role": "Admin"  }
-]
-```
-Expected: `409 Conflict` — zero users created (New User 1 rolled back too!) ❌
 
 ---
 
-## 5️⃣ Scenario 2 — Intentional Rollback Demo
+## 6️⃣ Full Layer Flow
 
-Shows that `SaveChangesAsync` inside a transaction does NOT permanently save:
+### `GET /api/users/raw-sql/by-role/Admin`
 
-```csharp
-await using var transaction = await _unitOfWork.BeginTransactionAsync();
-try
-{
-    // User 1 saved inside transaction
-    await _unitOfWork.Users.AddAsync(user1);
-    await _unitOfWork.SaveChangesAsync();
-    // user1.Id is assigned BUT not visible outside this transaction yet
-
-    // User 2 saved inside transaction
-    await _unitOfWork.Users.AddAsync(user2);
-    await _unitOfWork.SaveChangesAsync();
-
-    // Simulate failure
-    throw new InvalidOperationException("Simulated failure");
-}
-catch
-{
-    await _unitOfWork.RollbackAsync(transaction);
-    // BOTH users are gone — even though SaveChangesAsync was called ✅
-    // SaveChangesAsync inside a transaction ≠ permanently committed
-}
+```
+UsersController.GetByRoleRawSql("Admin")
+      │
+      ▼
+UserService.GetByRoleRawSqlAsync("Admin")
+      │
+      ▼
+UserRepository.GetByRoleRawSqlAsync("Admin")
+      │
+      ▼
+_dbSet.FromSqlRaw("SELECT * FROM Users WHERE Role = {0}", "Admin")
+      │
+SQL:  SELECT * FROM Users WHERE Role = @p0   (@p0 = 'Admin')
+      │
+      ▼
+EF Core maps rows → List<User>
+      │
+      ▼
+UserService maps → List<UserResponseDto>
+      │
+      ▼
+Controller returns 200 OK
 ```
 
-> 💡 **Key insight** — `SaveChangesAsync()` inside a transaction only writes to
-> the **transaction buffer**. It is NOT committed to the DB until `CommitAsync()` is called.
-> Calling `RollbackAsync()` undoes everything in the buffer.
+### `PATCH /api/users/raw-sql/bulk-deactivate/Member`
 
-**Test:**
 ```
-POST /api/users/transaction-rollback-demo  (no body needed)
+UsersController.BulkDeactivateRawSql("Member")
+      │
+      ▼
+UserService.BulkDeactivateByRoleAsync("Member")
+      │
+      ▼
+UserRepository.BulkDeactivateByRoleAsync("Member")
+      │
+      ▼
+_context.Database.ExecuteSqlRawAsync(
+    "UPDATE Users SET IsActive = 0 WHERE Role = {0}", "Member")
+      │
+SQL:  UPDATE Users SET IsActive = 0, UpdatedAt = GETUTCDATE()
+      WHERE Role = @p0   (@p0 = 'Member')
+      │
+      ▼
+Returns: 3 (rows affected)
+      │
+      ▼
+Controller returns 200 OK with RawSqlDemo { RowsAffected = 3 }
 ```
-Expected: `200 OK` with `success: false` — both users rolled back ✅
-
----
-
-## 6️⃣ Scenario 3 — Savepoints (Partial Rollback)
-
-Savepoints let you roll back **part of a transaction** without losing everything.
-
-```csharp
-await using var transaction = await _unitOfWork.BeginTransactionAsync();
-
-// Create User 1 ✅
-await _unitOfWork.Users.AddAsync(user1);
-await _unitOfWork.SaveChangesAsync();
-
-// Mark a savepoint AFTER user 1
-await transaction.CreateSavepointAsync("AfterUser1");
-// "Remember this point — I may want to come back here"
-
-// Create User 2 — then something goes wrong
-await _unitOfWork.Users.AddAsync(user2);
-await _unitOfWork.SaveChangesAsync();
-
-// Roll back ONLY to the savepoint — User 1 is KEPT, User 2 is GONE
-await transaction.RollbackToSavepointAsync("AfterUser1");
-
-// Commit — only User 1 is saved
-await _unitOfWork.CommitAsync(transaction);  // ← User 1 committed ✅
-                                              // User 2 never existed ✅
-```
-
-### Savepoint Timeline
-```
-BEGIN TRANSACTION
-  ├── INSERT User 1                 ← staged ✅
-  ├── SAVEPOINT "AfterUser1"        ← checkpoint created
-  ├── INSERT User 2                 ← staged ✅
-  ├── ROLLBACK TO "AfterUser1"      ← User 2 undone, User 1 kept ✅
-  └── COMMIT                        ← only User 1 committed ✅
-```
-
-**Test:**
-```
-POST /api/users/savepoint-demo  (no body needed)
-```
-Expected: `200 OK` with `success: true` — only User 1 saved ✅
-
----
-
-## 7️⃣ SaveChangesAsync Inside vs Outside Transaction
-
-| | Outside Transaction | Inside Transaction |
-|--|--------------------|--------------------|
-| When committed | Immediately ✅ | Only after `CommitAsync()` |
-| Can be undone | ❌ No | ✅ Yes — until `CommitAsync()` |
-| Visible to others | Immediately | Only after `CommitAsync()` |
-| Use when | Single operation | Multiple related operations |
-
----
-
-## 8️⃣ `await using` — Why We Use It
-
-```csharp
-// await using — automatically disposes transaction when done
-await using var transaction = await _unitOfWork.BeginTransactionAsync();
-
-// If we forget to commit/rollback, disposal auto-rolls back ✅
-// This prevents transactions from staying open indefinitely
-```
-
-> 💡 Always use `await using` with transactions. If an unhandled exception occurs
-> and you forget to call `RollbackAsync`, the `await using` ensures the transaction
-> is disposed (which triggers an automatic rollback).
 
 ---
 
 ## 🌐 Endpoints Added in This Step
 
-| Method | Endpoint | Demonstrates |
-|--------|----------|-------------|
-| `POST` | `/api/users/bulk-create` | Atomic transaction — all or nothing |
-| `POST` | `/api/users/transaction-rollback-demo` | Intentional rollback |
-| `POST` | `/api/users/savepoint-demo` | Savepoint — partial rollback |
+| Method | Endpoint | Method Used | Demonstrates |
+|--------|----------|-------------|-------------|
+| `GET` | `/api/users/raw-sql/by-role/{role}` | `FromSqlRaw` | Raw SELECT |
+| `GET` | `/api/users/raw-sql/by-email?email=` | `FromSqlRaw` | Raw SELECT with param |
+| `PATCH` | `/api/users/raw-sql/deactivate/{id}` | `ExecuteSqlRaw` | Raw UPDATE single row |
+| `PATCH` | `/api/users/raw-sql/bulk-deactivate/{role}` | `ExecuteSqlRaw` | Raw bulk UPDATE |
+| `GET` | `/api/users/sp/active-by-role/{role}` | `FromSqlRaw` + SP | Stored Proc returning rows |
+| `PATCH` | `/api/users/sp/update-role/{id}?newRole=` | `ExecuteSqlRaw` + SP | Stored Proc no rows |
+
+---
+
+## 🧪 Test Endpoints
+
+| Endpoint | Expected Result |
+|----------|----------------|
+| `GET /api/users/raw-sql/by-role/Admin` | All Admin users |
+| `GET /api/users/raw-sql/by-role/Member` | All Member users |
+| `GET /api/users/raw-sql/by-email?email=alice@app.com` | Alice's user object |
+| `PATCH /api/users/raw-sql/deactivate/1` | `rowsAffected: 1` |
+| `PATCH /api/users/raw-sql/bulk-deactivate/Member` | `rowsAffected: N` |
+| `GET /api/users/sp/active-by-role/Admin` | Active admins via SP |
+| `PATCH /api/users/sp/update-role/1?newRole=Admin` | Role updated via SP |
 
 ---
 
@@ -282,20 +335,23 @@ await using var transaction = await _unitOfWork.BeginTransactionAsync();
 
 | Rule | Reason |
 |------|--------|
-| Always wrap multi-step operations in a transaction | Prevents partial data on failure |
-| Use `await using` for transactions | Auto-rollback on disposal if not committed |
-| `SaveChangesAsync` inside transaction ≠ committed | Must call `CommitAsync()` to persist |
-| Always call `RollbackAsync` in catch block | Prevents transaction staying open |
-| Use savepoints for complex multi-stage operations | Allows partial recovery without full rollback |
-| Keep transactions short | Long transactions hold DB locks — hurts concurrency |
+| Always use `{0}` parameters, never string interpolation | SQL injection prevention |
+| `FromSqlRaw` must SELECT all entity columns | EF Core needs to map all properties |
+| `ExecuteSqlRaw` called on `_context.Database` not `_dbSet` | It doesn't return entities |
+| Create stored procedures in migrations | Version controlled, consistent across environments |
+| Use `DROP PROCEDURE IF EXISTS` in `Down()` | Safe rollback of SP migration |
+| Prefer LINQ over raw SQL when possible | LINQ is database-agnostic and safer |
+| Use raw SQL for bulk operations | Far more efficient than loading entities |
 
 ---
 
 ## 🚀 How to Run
 
 ```bash
-# Create migration for new indexes
-dotnet ef migrations add AddPerformanceIndexes --output-dir Data/Migrations
+# Create migration for stored procedures
+dotnet ef migrations add AddStoredProcedures --output-dir Data/Migrations
+
+# Edit the migration file — add SP creation in Up() and drop in Down()
 
 # Apply
 dotnet ef database update
@@ -303,38 +359,42 @@ dotnet ef database update
 # Run
 dotnet run
 
-# Test in Swagger:
-# 1. POST /api/users/bulk-create         (with JSON body)
-# 2. POST /api/users/transaction-rollback-demo  (no body)
-# 3. POST /api/users/savepoint-demo      (no body)
+# Test all endpoints in Swagger
 ```
 
 ---
 
-## ✅ Folder Structure After Step 10
+## ✅ Folder Structure After Step 11
 
 ```
 TaskManagerAPI/
 ├── Controllers/
-│   └── UsersController.cs       ← Updated (3 new endpoints)
+│   └── UsersController.cs                  ← Updated (6 new endpoints)
 ├── DTOs/
 │   └── User/
-│       └── TransactionDemo.cs   ← NEW
-├── Services/
+│       └── RawSqlDemo.cs                   ← NEW
+├── Data/
+│   └── Migrations/
+│       └── XXXXXX_AddStoredProcedures.cs   ← NEW
+├── Repositories/
 │   ├── Interfaces/
-│   │   └── IUserService.cs      ← Updated (3 transaction methods)
+│   │   └── IUserRepository.cs              ← Updated (raw SQL methods)
 │   └── Implementations/
-│       └── UserService.cs       ← Updated (transaction implementations)
-└── UnitOfWork/
-    ├── IUnitOfWork.cs           ← Updated (BeginTransaction, Commit, Rollback)
-    └── UnitOfWork.cs            ← Updated (transaction implementations)
+│       └── UserRepository.cs               ← Updated (raw SQL implementations)
+└── Services/
+    ├── Interfaces/
+    │   └── IUserService.cs                 ← Updated (raw SQL methods)
+    └── Implementations/
+        └── UserService.cs                  ← Updated (raw SQL implementations)
 ```
 
 ---
 
-## ✅ What's Next — Step 11: Raw SQL
+## ✅ What's Next — Step 12: Advanced Features
 In the next step we will:
-- **FromSqlRaw** — execute raw SQL that returns entities
-- **ExecuteSqlRaw** — execute raw SQL for INSERT/UPDATE/DELETE
-- **Stored Procedures** — call stored procedures via EF Core
-- Add raw SQL methods to repositories
+- **Global Query Filters** — automatically filter all queries (e.g. soft delete)
+- **Soft Delete** — mark records as deleted instead of removing them
+- **Concurrency Handling** — `RowVersion` to prevent conflicting updates
+- **Shadow Properties** — DB columns with no C# property
+- **Value Converters** — transform values between C# and DB
+- **Interceptors** — hook into EF Core operations
