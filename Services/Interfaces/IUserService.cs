@@ -30,4 +30,14 @@ public interface IUserService
     // Performance Demo
     Task<object> GetPerformanceDemoAsync();
 
+
+    // ── Raw SQL ────────────────────────────────────────────────
+Task<IEnumerable<UserResponseDto>> GetByRoleRawSqlAsync(string role);
+Task<UserResponseDto?>             GetByEmailRawSqlAsync(string email);
+Task<RawSqlDemo>                   DeactivateUserRawSqlAsync(int userId);
+Task<RawSqlDemo>                   BulkDeactivateByRoleAsync(string role);
+Task<IEnumerable<UserResponseDto>> GetActiveUsersByRoleSpAsync(string role);
+Task<RawSqlDemo>                   UpdateUserRoleSpAsync(int userId, string newRole);
+
+
 }

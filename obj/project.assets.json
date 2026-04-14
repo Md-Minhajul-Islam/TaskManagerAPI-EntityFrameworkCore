@@ -3216,9 +3216,9 @@
   "projectFileDependencyGroups": {
     "net10.0": [
       "Microsoft.AspNetCore.OpenApi >= 10.0.4",
+      "Microsoft.EntityFrameworkCore.Proxies >= 10.0.5",
       "Microsoft.EntityFrameworkCore.SqlServer >= 10.0.5",
-      "Microsoft.EntityFrameworkCore.Tools >= 10.0.5",
-      "Microsoft.Entityframeworkcore.proxies >= 10.0.5"
+      "Microsoft.EntityFrameworkCore.Tools >= 10.0.5"
     ]
   },
   "packageFolders": {
@@ -3268,6 +3268,10 @@
             "target": "Package",
             "version": "[10.0.4, )"
           },
+          "Microsoft.EntityFrameworkCore.Proxies": {
+            "target": "Package",
+            "version": "[10.0.5, )"
+          },
           "Microsoft.EntityFrameworkCore.SqlServer": {
             "target": "Package",
             "version": "[10.0.5, )"
@@ -3275,10 +3279,6 @@
           "Microsoft.EntityFrameworkCore.Tools": {
             "include": "Runtime, Build, Native, ContentFiles, Analyzers, BuildTransitive",
             "suppressParent": "All",
-            "target": "Package",
-            "version": "[10.0.5, )"
-          },
-          "Microsoft.Entityframeworkcore.proxies": {
             "target": "Package",
             "version": "[10.0.5, )"
           }
