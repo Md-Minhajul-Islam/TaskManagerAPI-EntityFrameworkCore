@@ -1,278 +1,270 @@
-# TaskManagerAPI — Step 08: Tracking
+# TaskManagerAPI — Step 10: Transactions
 
 ## 📌 What This Step Covers
-- Change Tracking — how EF Core watches entities
-- EntityState — Added, Modified, Deleted, Unchanged, Detached
-- AsNoTracking() — disable tracking for read-only queries
-- AsNoTrackingWithIdentityResolution() — middle ground
-- When to use tracking vs no tracking
+- What is a Database Transaction
+- BeginTransaction — starting an explicit transaction
+- Commit — saving all changes permanently
+- Rollback — undoing all changes on failure
+- Savepoints — partial rollbacks within a transaction
+- Transaction support in UnitOfWork
 
 ---
 
-## 🧠 What is Change Tracking?
+## 🧠 What is a Transaction?
 
-When EF Core loads an entity from the database it takes a **snapshot** of its original values and **watches** every property for changes.
-
-```
-var user = await _context.Users.FindAsync(1);
-// EF Core:
-//   1. Loads user from DB
-//   2. Takes a snapshot: { FullName: "Alice", Email: "alice@mail.com" }
-//   3. Starts watching user for changes
-
-user.FullName = "Bob";
-// EF Core detects: FullName changed from "Alice" to "Bob"
-// EntityState → Modified
-
-await _context.SaveChangesAsync();
-// EF Core generates: UPDATE Users SET FullName = 'Bob' WHERE Id = 1
-// Only changed columns are included in the UPDATE ✅
-```
-
----
-
-## 1️⃣ EntityState Lifecycle
-
-Every tracked entity has an `EntityState`. It tells EF Core what SQL to generate at `SaveChanges`.
+A transaction groups multiple database operations into a **single atomic unit**.
+Either ALL operations succeed together, or NONE of them are saved.
 
 ```
-new User()              →  Detached    (not tracked at all)
-       │
-       ▼ _dbSet.Add(user)
-    Added               →  INSERT queued
-       │
-       ▼ SaveChangesAsync()
-    Unchanged           →  saved to DB, now tracked
-       │
-       ▼ user.FullName = "Bob"
-    Modified            →  UPDATE queued
-       │
-       ▼ SaveChangesAsync()
-    Unchanged           →  saved, back to watching
-       │
-       ▼ _dbSet.Remove(user)
-    Deleted             →  DELETE queued
-       │
-       ▼ SaveChangesAsync()
-    Detached            →  gone from DB and tracking
+Without Transaction:
+  Operation 1: INSERT User 1  ✅ saved
+  Operation 2: INSERT User 2  ✅ saved
+  Operation 3: INSERT User 3  ❌ fails
+  Result: User 1 and 2 saved, User 3 missing = INCONSISTENT DATA ❌
+
+With Transaction:
+  Operation 1: INSERT User 1  ✅ staged
+  Operation 2: INSERT User 2  ✅ staged
+  Operation 3: INSERT User 3  ❌ fails → ROLLBACK
+  Result: NOTHING saved = data stays consistent ✅
 ```
 
-### What SaveChanges does per state
+### Real-world analogy
+A bank transfer:
+```
+BEGIN TRANSACTION
+  Deduct $100 from Account A   ← staged
+  Add    $100 to   Account B   ← staged
+COMMIT                         ← both happen together ✅
 
-| EntityState | Triggered by | SQL Generated |
-|-------------|-------------|---------------|
-| `Unchanged` | Load from DB, no changes | Nothing — skipped |
-| `Added` | `_dbSet.Add(entity)` | `INSERT INTO ...` |
-| `Modified` | Property value changed | `UPDATE ... SET changed_cols` |
-| `Deleted` | `_dbSet.Remove(entity)` | `DELETE FROM ...` |
-| `Detached` | Never tracked / manually detached | Nothing — not managed |
-
-### Code example — all 5 states
-```csharp
-// Detached — not yet tracked
-var user = new User { FullName = "Alice" };
-// _context.Entry(user).State == Detached
-
-// Added — queued for INSERT
-await _context.Users.AddAsync(user);
-// _context.Entry(user).State == Added
-
-// Unchanged — saved, now tracked
-await _context.SaveChangesAsync();
-// _context.Entry(user).State == Unchanged
-
-// Modified — change detected automatically
-user.FullName = "Bob";
-// _context.Entry(user).State == Modified
-
-// Deleted — queued for DELETE
-_context.Users.Remove(user);
-// _context.Entry(user).State == Deleted
-
-// Detached — manually removed from tracking
-_context.Entry(user).State = EntityState.Detached;
-// _context.Entry(user).State == Detached
+If anything fails:
+ROLLBACK                       ← neither happens ✅
 ```
 
 ---
 
-## 2️⃣ AsNoTracking()
+## 1️⃣ Transaction Lifecycle
 
-`AsNoTracking()` tells EF Core to load data **without creating a tracking snapshot**.
+```
+BeginTransactionAsync()
+        │
+        ▼ transaction is open — nothing committed yet
+        │
+        ├── SaveChangesAsync()    ← stages INSERT/UPDATE/DELETE
+        ├── SaveChangesAsync()    ← stages more operations
+        │
+        ├── CommitAsync()         ← ALL staged changes go to DB permanently ✅
+        │         OR
+        └── RollbackAsync()       ← ALL staged changes are undone ❌
+```
+
+---
+
+## 2️⃣ IUnitOfWork — Transaction Methods
 
 ```csharp
-// With tracking (default) — EF Core creates a snapshot
-var users = await _context.Users.ToListAsync();
-// EF Core: loads + snapshots every user = more memory + CPU
-
-// Without tracking — just loads data, no snapshot
-var users = await _context.Users
-    .AsNoTracking()
-    .ToListAsync();
-// EF Core: loads users, no snapshot = faster + less memory ✅
-```
-
-### Performance difference
-```
-100 users loaded WITH tracking:
-  - 100 entity snapshots created in memory
-  - Change tracker watches all 100 objects
-  - Extra CPU to detect changes on SaveChanges
-
-100 users loaded WITHOUT tracking:
-  - 0 snapshots
-  - 0 change tracking overhead
-  - Results thrown away after use
-  - ✅ Noticeably faster for large datasets
-```
-
-### In Repository
-```csharp
-// Read-only methods use AsNoTracking
-public async Task<IEnumerable<T>> GetAllAsNoTrackingAsync()
-    => await _dbSet
-        .AsNoTracking()
-        .ToListAsync();
-
-public async Task<T?> GetByIdAsNoTrackingAsync(int id)
-    => await _dbSet
-        .AsNoTracking()
-        .FirstOrDefaultAsync(e => EF.Property<int>(e, "Id") == id);
-```
-
----
-
-## 3️⃣ AsNoTrackingWithIdentityResolution()
-
-Middle ground between tracking and no-tracking.
-
-```csharp
-var tasks = await _context.Tasks
-    .AsNoTrackingWithIdentityResolution()
-    .Include(t => t.Project)
-    .ToListAsync();
-```
-
-### The problem it solves
-```
-Without identity resolution:
-  Task 1 → Project { Id=1, Name="Alpha" }  ← one object
-  Task 2 → Project { Id=1, Name="Alpha" }  ← DIFFERENT object, same data
-  Task 3 → Project { Id=1, Name="Alpha" }  ← ANOTHER object, same data
-  = 3 duplicate Project objects in memory ❌
-
-With AsNoTrackingWithIdentityResolution:
-  Task 1 → Project { Id=1, Name="Alpha" }  ← one object
-  Task 2 → same Project object ↑            ← reused ✅
-  Task 3 → same Project object ↑            ← reused ✅
-  = 1 Project object shared across all tasks ✅
-```
-
-| | Tracking | AsNoTracking | AsNoTrackingWithIdentityResolution |
-|--|----------|-------------|-----------------------------------|
-| Change detection | ✅ Yes | ❌ No | ❌ No |
-| Memory (snapshots) | ❌ High | ✅ Low | ✅ Low |
-| Duplicate entities | ✅ Resolved | ❌ Duplicates possible | ✅ Resolved |
-| Performance | Slowest | Fastest | Middle |
-
----
-
-## 4️⃣ When to Use Each
-
-| Scenario | Recommended | Reason |
-|----------|------------|--------|
-| `GET` all records (display only) | `AsNoTracking` ✅ | Read-only, no changes needed |
-| `GET` by id for display | `AsNoTracking` ✅ | Read-only |
-| `GET` by id to **update** | Regular tracking ✅ | Need change detection |
-| `GET` by id to **delete** | Regular tracking ✅ | Need to track Deleted state |
-| Reports / dashboards | `AsNoTracking` ✅ | Pure reads, max performance |
-| Lists with related data (no dupes) | `AsNoTrackingWithIdentityResolution` ✅ | Avoids duplicate objects |
-| Creating a new entity | Regular tracking ✅ | Need Added state |
-| Batch reads (1000+ rows) | `AsNoTracking` ✅ | Huge memory saving |
-
----
-
-## 5️⃣ Checking EntityState in Code
-
-```csharp
-// Check state of a specific entity
-var state = _context.Entry(user).State;
-
-// Check all tracked entities
-foreach (var entry in _context.ChangeTracker.Entries())
+public interface IUnitOfWork : IDisposable
 {
-    Console.WriteLine($"{entry.Entity.GetType().Name}: {entry.State}");
-}
+    IUserRepository Users { get; }
 
-// Check all tracked entities of a specific type
-foreach (var entry in _context.ChangeTracker.Entries<User>())
-{
-    Console.WriteLine($"User {entry.Entity.Id}: {entry.State}");
+    Task<int>                  SaveChangesAsync();
+
+    // ── Transactions ───────────────────────────────────────────
+    Task<IDbContextTransaction> BeginTransactionAsync();    // start
+    Task                        CommitAsync(IDbContextTransaction transaction);   // save
+    Task                        RollbackAsync(IDbContextTransaction transaction); // undo
 }
 ```
 
 ---
 
-## 6️⃣ Manually Setting EntityState
+## 3️⃣ UnitOfWork — Transaction Implementations
 
 ```csharp
-// Force an entity to Modified (useful for disconnected scenarios)
-_context.Entry(user).State = EntityState.Modified;
-await _context.SaveChangesAsync();
-// Generates UPDATE for ALL columns (not just changed ones)
+// BeginTransaction — opens a transaction on the DB connection
+public async Task<IDbContextTransaction> BeginTransactionAsync()
+    => await _context.Database.BeginTransactionAsync();
+// All SaveChangesAsync() calls after this are part of THIS transaction
+// Changes are staged in the DB but not visible to other connections yet
 
-// Detach an entity — stop tracking it
-_context.Entry(user).State = EntityState.Detached;
-// EF Core no longer watches this entity
+// Commit — makes all staged changes permanent
+public async Task CommitAsync(IDbContextTransaction transaction)
+    => await transaction.CommitAsync();
+// After commit: changes are visible to all DB connections ✅
 
-// Mark specific properties as modified
-_context.Entry(user).Property(u => u.FullName).IsModified = true;
-// Only FullName is included in UPDATE — other columns ignored
+// Rollback — undoes all staged changes
+public async Task RollbackAsync(IDbContextTransaction transaction)
+    => await transaction.RollbackAsync();
+// After rollback: DB is exactly as it was before BeginTransaction ✅
 ```
 
 ---
 
-## 7️⃣ AppDbContext SaveChangesAsync Override
-
-Our `AppDbContext` uses Change Tracking to auto-set `UpdatedAt`:
+## 4️⃣ Scenario 1 — Bulk Create (All or Nothing)
 
 ```csharp
-public override async Task<int> SaveChangesAsync(
-    CancellationToken cancellationToken = default)
+await using var transaction = await _unitOfWork.BeginTransactionAsync();
+try
 {
-    // ChangeTracker.Entries<BaseEntity>() returns all tracked BaseEntity instances
-    foreach (var entry in ChangeTracker.Entries<BaseEntity>())
+    foreach (var dto in dtos)
     {
-        if (entry.State == EntityState.Modified)
-        {
-            // EF Core told us this entity was modified
-            // → auto-set UpdatedAt before saving
-            entry.Entity.UpdatedAt = DateTime.UtcNow;
-        }
+        // Validate — any failure triggers rollback
+        var isUnique = await _unitOfWork.Users.IsEmailUniqueAsync(dto.Email);
+        if (!isUnique)
+            throw new InvalidOperationException($"Email '{dto.Email}' exists");
+
+        var user = new User { ... };
+        await _unitOfWork.Users.AddAsync(user);
+
+        // SaveChangesAsync inside transaction:
+        // Changes are staged in DB — NOT yet committed
+        // Still reversible if something fails later
+        await _unitOfWork.SaveChangesAsync();
     }
 
-    return await base.SaveChangesAsync(cancellationToken);
+    // All users passed — commit everything
+    await _unitOfWork.CommitAsync(transaction);     // ← permanent ✅
+}
+catch (Exception ex)
+{
+    // One user failed — undo ALL users
+    await _unitOfWork.RollbackAsync(transaction);   // ← all undone ❌
 }
 ```
+
+### Test — Success (all unique emails)
+```json
+POST /api/users/bulk-create
+[
+  { "fullName": "Bulk User 1", "email": "bulk1@app.com", "role": "Member" },
+  { "fullName": "Bulk User 2", "email": "bulk2@app.com", "role": "Member" },
+  { "fullName": "Bulk User 3", "email": "bulk3@app.com", "role": "Admin"  }
+]
+```
+Expected: `200 OK` — all 3 users created ✅
+
+### Test — Rollback (duplicate email mid-way)
+```json
+POST /api/users/bulk-create
+[
+  { "fullName": "New User 1", "email": "newbulk1@app.com", "role": "Member" },
+  { "fullName": "Duplicate",  "email": "bulk1@app.com",    "role": "Member" },
+  { "fullName": "New User 3", "email": "newbulk3@app.com", "role": "Admin"  }
+]
+```
+Expected: `409 Conflict` — zero users created (New User 1 rolled back too!) ❌
 
 ---
 
-## 8️⃣ EntityState Demo Response
+## 5️⃣ Scenario 2 — Intentional Rollback Demo
 
-`GET /api/users/1/entity-state-demo` returns:
+Shows that `SaveChangesAsync` inside a transaction does NOT permanently save:
 
-```json
+```csharp
+await using var transaction = await _unitOfWork.BeginTransactionAsync();
+try
 {
-  "userId": 1,
-  "fullName": "Alice Johnson",
-  "stateAfterLoad":   "Unchanged",
-  "stateAfterChange": "Modified",
-  "stateAfterDetach": "Detached",
-  "stateAfterAdd":    "Added",
-  "stateAfterRemove": "Deleted",
-  "explanation": "EntityState shows what EF Core will do at SaveChanges: Added=INSERT, Modified=UPDATE, Deleted=DELETE, Unchanged=nothing, Detached=not tracked"
+    // User 1 saved inside transaction
+    await _unitOfWork.Users.AddAsync(user1);
+    await _unitOfWork.SaveChangesAsync();
+    // user1.Id is assigned BUT not visible outside this transaction yet
+
+    // User 2 saved inside transaction
+    await _unitOfWork.Users.AddAsync(user2);
+    await _unitOfWork.SaveChangesAsync();
+
+    // Simulate failure
+    throw new InvalidOperationException("Simulated failure");
+}
+catch
+{
+    await _unitOfWork.RollbackAsync(transaction);
+    // BOTH users are gone — even though SaveChangesAsync was called ✅
+    // SaveChangesAsync inside a transaction ≠ permanently committed
 }
 ```
+
+> 💡 **Key insight** — `SaveChangesAsync()` inside a transaction only writes to
+> the **transaction buffer**. It is NOT committed to the DB until `CommitAsync()` is called.
+> Calling `RollbackAsync()` undoes everything in the buffer.
+
+**Test:**
+```
+POST /api/users/transaction-rollback-demo  (no body needed)
+```
+Expected: `200 OK` with `success: false` — both users rolled back ✅
+
+---
+
+## 6️⃣ Scenario 3 — Savepoints (Partial Rollback)
+
+Savepoints let you roll back **part of a transaction** without losing everything.
+
+```csharp
+await using var transaction = await _unitOfWork.BeginTransactionAsync();
+
+// Create User 1 ✅
+await _unitOfWork.Users.AddAsync(user1);
+await _unitOfWork.SaveChangesAsync();
+
+// Mark a savepoint AFTER user 1
+await transaction.CreateSavepointAsync("AfterUser1");
+// "Remember this point — I may want to come back here"
+
+// Create User 2 — then something goes wrong
+await _unitOfWork.Users.AddAsync(user2);
+await _unitOfWork.SaveChangesAsync();
+
+// Roll back ONLY to the savepoint — User 1 is KEPT, User 2 is GONE
+await transaction.RollbackToSavepointAsync("AfterUser1");
+
+// Commit — only User 1 is saved
+await _unitOfWork.CommitAsync(transaction);  // ← User 1 committed ✅
+                                              // User 2 never existed ✅
+```
+
+### Savepoint Timeline
+```
+BEGIN TRANSACTION
+  ├── INSERT User 1                 ← staged ✅
+  ├── SAVEPOINT "AfterUser1"        ← checkpoint created
+  ├── INSERT User 2                 ← staged ✅
+  ├── ROLLBACK TO "AfterUser1"      ← User 2 undone, User 1 kept ✅
+  └── COMMIT                        ← only User 1 committed ✅
+```
+
+**Test:**
+```
+POST /api/users/savepoint-demo  (no body needed)
+```
+Expected: `200 OK` with `success: true` — only User 1 saved ✅
+
+---
+
+## 7️⃣ SaveChangesAsync Inside vs Outside Transaction
+
+| | Outside Transaction | Inside Transaction |
+|--|--------------------|--------------------|
+| When committed | Immediately ✅ | Only after `CommitAsync()` |
+| Can be undone | ❌ No | ✅ Yes — until `CommitAsync()` |
+| Visible to others | Immediately | Only after `CommitAsync()` |
+| Use when | Single operation | Multiple related operations |
+
+---
+
+## 8️⃣ `await using` — Why We Use It
+
+```csharp
+// await using — automatically disposes transaction when done
+await using var transaction = await _unitOfWork.BeginTransactionAsync();
+
+// If we forget to commit/rollback, disposal auto-rolls back ✅
+// This prevents transactions from staying open indefinitely
+```
+
+> 💡 Always use `await using` with transactions. If an unhandled exception occurs
+> and you forget to call `RollbackAsync`, the `await using` ensures the transaction
+> is disposed (which triggers an automatic rollback).
 
 ---
 
@@ -280,8 +272,9 @@ public override async Task<int> SaveChangesAsync(
 
 | Method | Endpoint | Demonstrates |
 |--------|----------|-------------|
-| `GET` | `/api/users/no-tracking` | `AsNoTracking` — faster read |
-| `GET` | `/api/users/{id}/entity-state-demo` | All 5 `EntityState` values |
+| `POST` | `/api/users/bulk-create` | Atomic transaction — all or nothing |
+| `POST` | `/api/users/transaction-rollback-demo` | Intentional rollback |
+| `POST` | `/api/users/savepoint-demo` | Savepoint — partial rollback |
 
 ---
 
@@ -289,12 +282,12 @@ public override async Task<int> SaveChangesAsync(
 
 | Rule | Reason |
 |------|--------|
-| Use `AsNoTracking` for all GET / read-only queries | Faster, less memory |
-| Use regular tracking when you need to update or delete | Change detection needed |
-| Never call `SaveChanges` with `AsNoTracking` entities | Changes won't be detected |
-| `AsNoTrackingWithIdentityResolution` for queries with related data | Avoids duplicate objects |
-| Detach entities you don't want to accidentally save | Prevents unintended DB changes |
-| Only changed columns are included in UPDATE | EF Core is smart — not all columns |
+| Always wrap multi-step operations in a transaction | Prevents partial data on failure |
+| Use `await using` for transactions | Auto-rollback on disposal if not committed |
+| `SaveChangesAsync` inside transaction ≠ committed | Must call `CommitAsync()` to persist |
+| Always call `RollbackAsync` in catch block | Prevents transaction staying open |
+| Use savepoints for complex multi-stage operations | Allows partial recovery without full rollback |
+| Keep transactions short | Long transactions hold DB locks — hurts concurrency |
 
 ---
 
@@ -305,41 +298,38 @@ public override async Task<int> SaveChangesAsync(
 dotnet build
 dotnet run
 
-# Test endpoints
-GET /api/users/no-tracking
-GET /api/users/1/entity-state-demo
+# Test in Swagger:
+# 1. POST /api/users/bulk-create         (with JSON body)
+# 2. POST /api/users/transaction-rollback-demo  (no body)
+# 3. POST /api/users/savepoint-demo      (no body)
 ```
 
 ---
 
-## ✅ Folder Structure After Step 8
+## ✅ Folder Structure After Step 10
 
 ```
 TaskManagerAPI/
 ├── Controllers/
-│   └── UsersController.cs              ← Updated (2 new endpoints)
+│   └── UsersController.cs       ← Updated (3 new endpoints)
 ├── DTOs/
 │   └── User/
-│       └── EntityStateDemo.cs          ← NEW
-├── Repositories/
-│   ├── Interfaces/
-│   │   ├── IRepository.cs              ← Updated (AsNoTracking methods)
-│   │   └── IUserRepository.cs          ← Updated (GetEntityState, DetachEntity)
-│   └── Implementations/
-│       ├── Repository.cs               ← Updated (AsNoTracking implementations)
-│       └── UserRepository.cs           ← Updated (GetEntityState, DetachEntity)
+│       └── TransactionDemo.cs   ← NEW
 ├── Services/
 │   ├── Interfaces/
-│   │   └── IUserService.cs             ← Updated (2 new methods)
+│   │   └── IUserService.cs      ← Updated (3 transaction methods)
 │   └── Implementations/
-│       └── UserService.cs              ← Updated (NoTracking + EntityState demo)
+│       └── UserService.cs       ← Updated (transaction implementations)
+└── UnitOfWork/
+    ├── IUnitOfWork.cs           ← Updated (BeginTransaction, Commit, Rollback)
+    └── UnitOfWork.cs            ← Updated (transaction implementations)
 ```
 
 ---
 
-## ✅ What's Next — Step 09: Performance Optimization
+## ✅ What's Next — Step 11: Raw SQL
 In the next step we will:
-- **Indexes** — configure indexes for faster queries
-- **Split Queries** — fix cartesian explosion with multiple Includes
-- **Compiled Queries** — pre-compile frequently used queries
-- **AsNoTracking** in read-only repository methods (applied project-wide)
+- **FromSqlRaw** — execute raw SQL that returns entities
+- **ExecuteSqlRaw** — execute raw SQL for INSERT/UPDATE/DELETE
+- **Stored Procedures** — call stored procedures via EF Core
+- Add raw SQL methods to repositories

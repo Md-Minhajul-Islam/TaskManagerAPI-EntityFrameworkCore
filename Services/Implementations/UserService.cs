@@ -1,3 +1,4 @@
+using System.Transactions;
 using TaskManagerAPI.DTOs.User;
 using TaskManagerAPI.Models;
 using TaskManagerAPI.Services.Interfaces;
@@ -179,17 +180,6 @@ public class UserService : IUserService
         };
     }
 
-    // Private mapper - AutoMapper replaces this in Step 14
-    private static UserResponseDto MapToResponse(User user) => new()
-    {
-        Id = user.Id,
-        FullName = user.FullName,
-        Email = user.Email,
-        Role = user.Role,
-        IsActive = user.IsActive,
-        CreatedAt = user.CreatedAt
-    };
-
     // AsNoTracking
     public async Task<IEnumerable<UserResponseDto>> GetAllNoTrackingAsync()
     {
@@ -283,4 +273,230 @@ public class UserService : IUserService
             Explanation      = "EntityState lifecycle demonstrated"
         };
     }
+
+    // Transaction: Bulk create users atomically 
+    // All users are created or NONE are created
+    // If any one fails - All rolllback
+    public async Task<TransactionDemo> BulkCreateUsersAsync(
+        List<CreateUserDto> dtos
+    )
+    {
+        // Step 1 - begin transaction
+        await using var transaction = await _unitOfWork.BeginTransactionAsync();
+
+        var steps = new List<string>();
+        steps.Add("Transaction started");
+
+        try
+        {
+            var createdUsers = new List<UserResponseDto>();
+            
+            foreach(var dto in dtos)
+            {
+                var isUnique = await _unitOfWork.Users.IsEmailUniqueAsync(dto.Email);
+                if (!isUnique)
+                {
+                    throw new InvalidOperationException(
+                        $"Email '{dto.Email}' already exists — rolling back ALL users"
+                    );
+                }
+                var user = new User
+                {
+                    FullName = dto.FullName,
+                    Email = dto.Email,
+                    Role = dto.Role
+                };
+                await _unitOfWork.Users.AddAsync(user);
+                steps.Add($"User '{dto.FullName}' queued for INSERT");
+
+                // SaveChangesAsync inside transaction — changes are staged
+                // NOT yet committed to DB — still reversible
+                await _unitOfWork.SaveChangesAsync();
+                steps.Add($"User '{dto.FullName}' saved (not yet committed)");
+
+                createdUsers.Add(MapToResponse(user));
+
+            }
+            // Step 2 - commit - makes all changes permanent
+            await _unitOfWork.CommitAsync(transaction);
+            steps.Add("Transactions Commited - all users saved permanently");
+            
+            return new TransactionDemo
+            {
+                Success  = true,
+                Scenario = "Bulk create users — atomic transaction",
+                Outcome  = $"All {dtos.Count} users created successfully",
+                Steps    = steps.ToArray(),
+                Data     = createdUsers
+            };
+        }
+        catch(Exception ex)
+        {
+            // Step - 3 - Rollback - undoes all changes on any failure
+            await _unitOfWork.RollbackAsync(transaction);
+            steps.Add($"ERROR: {ex.Message}");
+            steps.Add("Transaction ROLLED BACK — no users saved");
+
+            return new TransactionDemo
+            {
+                Success  = false,
+                Scenario = "Bulk create users — atomic transaction",
+                Outcome  = "Transaction rolled back — zero users created",
+                Steps    = steps.ToArray(),
+                Data     = null
+            };
+        }    
+    }
+
+    // ── TRANSACTION: Demonstrate intentional rollback ──────────────────────────
+    // Creates two users then intentionally rolls back
+    // Shows that NOTHING was saved despite SaveChangesAsync being called
+    public async Task<TransactionDemo> TransactionWithRollbackDemoAsync()
+    {
+        await using var transaction = await _unitOfWork.BeginTransactionAsync();
+
+        var steps = new List<string>();
+        steps.Add("Transaction started");
+
+        try
+        {
+            // Create user 1
+            var user1 = new User
+            {
+                FullName = "Transaction Test User 1",
+                Email    = $"txtest1_{Guid.NewGuid()}@demo.com",
+                Role     = "Member"
+            };
+            await _unitOfWork.Users.AddAsync(user1);
+            await _unitOfWork.SaveChangesAsync();
+            steps.Add($"User 1 saved (Id={user1.Id}) — inside transaction, not committed");
+
+            // Create user 2
+            var user2 = new User
+            {
+                FullName = "Transaction Test User 2",
+                Email    = $"txtest2_{Guid.NewGuid()}@demo.com",
+                Role     = "Member"
+            };
+            await _unitOfWork.Users.AddAsync(user2);
+            await _unitOfWork.SaveChangesAsync();
+            steps.Add($"User 2 saved (Id={user2.Id}) — inside transaction, not committed");
+
+            // Intentionally throw to demonstrate rollback
+            steps.Add("Intentionally throwing exception to demonstrate rollback...");
+            throw new InvalidOperationException("Simulated failure — rollback demo");
+        }
+        catch (Exception ex)
+        {
+            await _unitOfWork.RollbackAsync(transaction);
+            steps.Add($"Exception: {ex.Message}");
+            steps.Add("Transaction ROLLED BACK — both users are gone from DB ❌");
+            steps.Add("Check DB — you will NOT find these users");
+
+            return new TransactionDemo
+            {
+                Success  = false,
+                Scenario = "Intentional rollback demo",
+                Outcome  = "Both users were rolled back — DB unchanged",
+                Steps    = steps.ToArray(),
+                Data     = null
+            };
+        }
+    }
+
+    // ── TRANSACTION: Savepoint demo ────────────────────────────────────────────
+    // Savepoints let you roll back PART of a transaction
+    // without losing ALL changes
+    public async Task<TransactionDemo> SavepointDemoAsync()
+    {
+        await using var transaction = await _unitOfWork.BeginTransactionAsync();
+
+        var steps = new List<string>();
+        var created = new List<string>();
+
+        steps.Add("Transaction Started");
+
+        try
+        {
+            // Create user 1 — this will be KEPT
+            var user1 = new User
+            {
+                FullName = "Savepoint User 1 (kept)",
+                Email    = $"sp1_{Guid.NewGuid()}@demo.com",
+                Role     = "Member"
+            };
+            await _unitOfWork.Users.AddAsync(user1);
+            await _unitOfWork.SaveChangesAsync();
+            steps.Add($"User 1 saved — Id={user1.Id}");
+            created.Add(user1.FullName);
+
+            // Create a savepoint AFTER user 1
+            // "Remember this point — I may want to roll back to here"
+            await transaction.CreateSavepointAsync("AfterUser1");
+            steps.Add("Savepoint 'AfterUser1' created");
+
+            // Create user 2 — this will be ROLLED BACK to savepoint
+            var user2 = new User
+            {
+                FullName = "Savepoint User 2 (rolled back)",
+                Email    = $"sp2_{Guid.NewGuid()}@demo.com",
+                Role     = "Member"
+            };
+            await _unitOfWork.Users.AddAsync(user2);
+            await _unitOfWork.SaveChangesAsync();
+            steps.Add($"User 2 saved — Id={user2.Id}");
+        
+            // Simulate a problem with user 2
+            steps.Add("Problem detected with User 2 — rolling back to savepoint...");
+        
+            // Roll back to savepoint — ONLY user 2 is undone
+            // User 1 is still intact!
+            await transaction.RollbackToSavepointAsync("AfterUser1");
+            steps.Add("Rolled back to 'AfterUser1' — User 2 is gone, User 1 is safe");
+
+            // Commit — only user 1 is committed
+            await _unitOfWork.CommitAsync(transaction);
+            steps.Add("Transaction COMMITTED — only User 1 saved");
+
+            return new TransactionDemo
+            {
+                Success  = true,
+                Scenario = "Savepoint demo — partial rollback",
+                Outcome  = "User 1 committed, User 2 rolled back to savepoint",
+                Steps    = steps.ToArray(),
+                Data     = new { CommittedUsers = created }
+            };
+        
+        }
+        catch(Exception ex)
+        {
+            await _unitOfWork.RollbackAsync(transaction);
+            steps.Add($"Unexpected error: {ex.Message}");
+            steps.Add("Full rollback — nothing saved");
+
+            return new TransactionDemo
+            {
+                Success  = false,
+                Scenario = "Savepoint demo",
+                Outcome  = "Unexpected error — full rollback",
+                Steps    = steps.ToArray()
+            };
+        }
+    }
+
+
+
+
+
+
+    // Private mapper - AutoMapper replaces this in Step 14
+    private static UserResponseDto MapToResponse(User user) => new()
+    {
+        Id = user.Id,
+        FullName = user.FullName,
+        Email = user.Email,
+        Role = user.Role,
+        IsActive = user.IsActive,
+        CreatedAt = user.CreatedAt
+    };
 }
