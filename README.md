@@ -1,324 +1,280 @@
-# TaskManagerAPI — Step 09: Performance Optimization
+# TaskManagerAPI — Step 10: Transactions
 
 ## 📌 What This Step Covers
-- Indexes — single, composite, filtered
-- Split Queries — fix cartesian explosion with multiple Includes
-- Compiled Queries — pre-compile frequently used queries
-- AsNoTracking — applied to all read-only queries
-- Global Split Query — set as default for all queries
+- What is a Database Transaction
+- BeginTransaction — starting an explicit transaction
+- Commit — saving all changes permanently
+- Rollback — undoing all changes on failure
+- Savepoints — partial rollbacks within a transaction
+- Transaction support in UnitOfWork
 
 ---
 
-## 🧠 Why Performance Matters
+## 🧠 What is a Transaction?
 
-Without optimization a simple query can silently become slow:
+A transaction groups multiple database operations into a **single atomic unit**.
+Either ALL operations succeed together, or NONE of them are saved.
 
 ```
-100 users, each with 10 TeamMembers and 5 OwnedProjects
+Without Transaction:
+  Operation 1: INSERT User 1  ✅ saved
+  Operation 2: INSERT User 2  ✅ saved
+  Operation 3: INSERT User 3  ❌ fails
+  Result: User 1 and 2 saved, User 3 missing = INCONSISTENT DATA ❌
 
-Without Split Query:
-  EF Core does ONE query with JOINs
-  Result set = 100 × 10 × 5 = 5,000 rows
-  Most data is duplicated = cartesian explosion ❌
+With Transaction:
+  Operation 1: INSERT User 1  ✅ staged
+  Operation 2: INSERT User 2  ✅ staged
+  Operation 3: INSERT User 3  ❌ fails → ROLLBACK
+  Result: NOTHING saved = data stays consistent ✅
+```
 
-Without Indexes:
-  SQL Server scans EVERY row to find Role = 'Admin'
-  Full table scan on 1,000,000 users = very slow ❌
+### Real-world analogy
+A bank transfer:
+```
+BEGIN TRANSACTION
+  Deduct $100 from Account A   ← staged
+  Add    $100 to   Account B   ← staged
+COMMIT                         ← both happen together ✅
 
-Without AsNoTracking:
-  EF Core creates a snapshot for every loaded entity
-  1,000 users loaded = 1,000 snapshots in memory ❌
-
-Without Compiled Queries:
-  Every call to GetByEmailAsync translates LINQ → SQL from scratch
-  Called 10,000 times/day = 10,000 unnecessary translations ❌
+If anything fails:
+ROLLBACK                       ← neither happens ✅
 ```
 
 ---
 
-## 1️⃣ Indexes
-
-An index is a **sorted data structure** that lets SQL Server find rows without scanning the entire table.
-
-### Types of indexes we use
-
-#### Single Column Index
-Speeds up filtering or sorting on ONE column.
-```csharp
-// In UserConfiguration.cs
-builder.HasIndex(u => u.Role)
-    .HasDatabaseName("IX_Users_Role");
-// SQL: CREATE INDEX IX_Users_Role ON Users (Role)
-// Speeds up: WHERE Role = 'Admin'
-```
-
-#### Composite Index
-Speeds up queries that filter on TWO columns together.
-```csharp
-builder.HasIndex(u => new { u.IsActive, u.Role })
-    .HasDatabaseName("IX_Users_IsActive_Role");
-// SQL: CREATE INDEX IX_Users_IsActive_Role ON Users (IsActive, Role)
-// Speeds up: WHERE IsActive = 1 AND Role = 'Admin'
-```
-
-#### Filtered Index
-Indexes only a **subset** of rows — smaller index, faster lookups.
-```csharp
-builder.HasIndex(u => u.IsActive)
-    .HasFilter("[IsActive] = 1")
-    .HasDatabaseName("IX_Users_IsActive_Filtered");
-// SQL: CREATE INDEX IX_Users_IsActive_Filtered
-//      ON Users (IsActive) WHERE IsActive = 1
-// Only active users are indexed — index is much smaller ✅
-```
-
-### How indexes help
+## 1️⃣ Transaction Lifecycle
 
 ```
-Without index — Full Table Scan:
-  SQL Server: "Find all users where Role = 'Admin'"
-  → reads EVERY row one by one until done
-  → 1,000,000 rows = very slow ❌
-
-With index — Index Seek:
-  SQL Server: "Find all users where Role = 'Admin'"
-  → jumps directly to 'Admin' in the sorted index
-  → finds all matches instantly ✅
+BeginTransactionAsync()
+        │
+        ▼ transaction is open — nothing committed yet
+        │
+        ├── SaveChangesAsync()    ← stages INSERT/UPDATE/DELETE
+        ├── SaveChangesAsync()    ← stages more operations
+        │
+        ├── CommitAsync()         ← ALL staged changes go to DB permanently ✅
+        │         OR
+        └── RollbackAsync()       ← ALL staged changes are undone ❌
 ```
-
-### Index column order matters (Composite)
-```
-Index: (IsActive, Role)
-
-Efficient queries:
-  WHERE IsActive = 1                    ✅ uses index (leftmost column)
-  WHERE IsActive = 1 AND Role = 'Admin' ✅ uses index (both columns)
-
-Inefficient queries:
-  WHERE Role = 'Admin'                  ❌ can't use index (skipped leftmost)
-```
-
-> 💡 Always put the most selective column FIRST in a composite index.
-> The leftmost column must be in the WHERE clause for the index to be used.
-
-### All indexes added in this step
-
-| Index Name | Columns | Type | Speeds Up |
-|-----------|---------|------|-----------|
-| `IX_Users_Role` | `Role` | Single | `WHERE Role = ?` |
-| `IX_Users_IsActive` | `IsActive` | Single | `WHERE IsActive = ?` |
-| `IX_Users_IsActive_Role` | `IsActive, Role` | Composite | `WHERE IsActive = ? AND Role = ?` |
-| `IX_Users_IsActive_Filtered` | `IsActive` WHERE `IsActive=1` | Filtered | Active user queries |
 
 ---
 
-## 2️⃣ Split Queries
-
-When you use multiple `Include()` calls EF Core by default does ONE query with multiple JOINs. This causes **cartesian explosion**.
-
-### The Problem — Cartesian Explosion
-```
-User has:
-  - 3 TeamMembers
-  - 5 OwnedProjects
-
-Single query result (default):
-  Row 1: User | TeamMember 1 | Project 1
-  Row 2: User | TeamMember 1 | Project 2
-  Row 3: User | TeamMember 1 | Project 3
-  Row 4: User | TeamMember 1 | Project 4
-  Row 5: User | TeamMember 1 | Project 5
-  Row 6: User | TeamMember 2 | Project 1
-  Row 7: User | TeamMember 2 | Project 2
-  ...
-  Row 15: User | TeamMember 3 | Project 5
-
-Total = 3 × 5 = 15 rows for ONE user
-Most data is duplicated ❌
-```
-
-### The Fix — AsSplitQuery
-```csharp
-// Option 1 — on a specific query
-_dbSet
-    .Include(u => u.TeamMembers)
-    .Include(u => u.OwnedProjects)
-    .AsSplitQuery()             // ← EF Core sends separate SQL per Include
-    .FirstOrDefaultAsync(u => u.Id == id);
-
-// EF Core sends:
-// Query 1: SELECT * FROM Users WHERE Id = @id
-// Query 2: SELECT * FROM TeamMembers WHERE UserId = @id
-// Query 3: SELECT * FROM Projects WHERE OwnerId = @id
-// No duplication ✅
-```
+## 2️⃣ IUnitOfWork — Transaction Methods
 
 ```csharp
-// Option 2 — global default (our approach)
-// In ServiceCollectionExtensions.cs
-options.UseSqlServer(connectionString,
-    sqlOptions => sqlOptions
-        .UseQuerySplittingBehavior(QuerySplittingBehavior.SplitQuery));
-// Every query uses split query automatically ✅
-// No need to add AsSplitQuery() on every query
-```
-
-### Single Query vs Split Query
-
-| | Single Query | Split Query |
-|--|-------------|------------|
-| Number of SQL queries | 1 | 1 per Include |
-| Data duplication | ❌ Cartesian explosion | ✅ No duplication |
-| Network round trips | 1 | Multiple |
-| Best for | Few simple Includes | Multiple collection Includes |
-| Configured with | Default | `AsSplitQuery()` or global |
-
-> 💡 Since we set Split Query globally, our `GetWithAllRelatedAsync` works
-> correctly without any code change — the global setting handles it.
-
----
-
-## 3️⃣ Compiled Queries
-
-EF Core translates LINQ to SQL **every time** a query is called. Compiled Queries cache this translation so it only happens **once at startup**.
-
-### How it works
-```
-Without compiled query (default):
-  Call 1: LINQ → translate → SQL → execute → result
-  Call 2: LINQ → translate → SQL → execute → result   ← translation again!
-  Call 3: LINQ → translate → SQL → execute → result   ← translation again!
-  Called 10,000 times = 10,000 translations ❌
-
-With compiled query:
-  Startup: LINQ → translate → SQL (cached)
-  Call 1:  cached SQL → execute → result             ← no translation!
-  Call 2:  cached SQL → execute → result             ← no translation!
-  Call 3:  cached SQL → execute → result             ← no translation!
-  Called 10,000 times = 0 extra translations ✅
-```
-
-### Compiled query syntax
-```csharp
-// Declare as static readonly — compiled ONCE when class is loaded
-private static readonly Func<AppDbContext, string, Task<User?>>
-    GetByEmailCompiled =
-        EF.CompileAsyncQuery((AppDbContext ctx, string email) =>
-            ctx.Users.FirstOrDefault(
-                u => u.Email.ToLower() == email.ToLower()));
-//  ↑ return type                      ↑ parameters
-//  Func<DbContext, param1Type, returnType>
-
-// Use it in a method
-public async Task<User?> GetByEmailAsync(string email)
-    => await GetByEmailCompiled(_context, email);
-//                              ↑ pass DbContext + parameters
-```
-
-### Compiled query returning IAsyncEnumerable
-```csharp
-// For queries that return multiple rows use IAsyncEnumerable
-private static readonly Func<AppDbContext, IAsyncEnumerable<User>>
-    GetActiveUsersCompiled =
-        EF.CompileAsyncQuery((AppDbContext ctx) =>
-            ctx.Users
-                .Where(u => u.IsActive)
-                .OrderBy(u => u.FullName));
-
-// Consume with await foreach
-public async Task<IEnumerable<User>> GetActiveUsersAsync()
+public interface IUnitOfWork : IDisposable
 {
-    var users = new List<User>();
-    await foreach (var user in GetActiveUsersCompiled(_context))
-        users.Add(user);
-    return users;
+    IUserRepository Users { get; }
+
+    Task<int>                  SaveChangesAsync();
+
+    // ── Transactions ───────────────────────────────────────────
+    Task<IDbContextTransaction> BeginTransactionAsync();    // start
+    Task                        CommitAsync(IDbContextTransaction transaction);   // save
+    Task                        RollbackAsync(IDbContextTransaction transaction); // undo
 }
 ```
 
-### Compiled queries added in this step
-
-| Compiled Query | Used in | Benefit |
-|---------------|---------|---------|
-| `GetByEmailCompiled` | `GetByEmailAsync` | High-frequency — called on every login |
-| `GetActiveUsersCompiled` | `GetActiveUsersAsync` | Common list query |
-| `GetByRoleCompiled` | `GetByRoleAsync` | Frequent filter query |
-
 ---
 
-## 4️⃣ AsNoTracking — Project-Wide
-
-All read-only repository methods use `AsNoTracking()`:
+## 3️⃣ UnitOfWork — Transaction Implementations
 
 ```csharp
-// In Repository<T>
-public async Task<IEnumerable<T>> GetAllAsNoTrackingAsync()
-    => await _dbSet.AsNoTracking().ToListAsync();
+// BeginTransaction — opens a transaction on the DB connection
+public async Task<IDbContextTransaction> BeginTransactionAsync()
+    => await _context.Database.BeginTransactionAsync();
+// All SaveChangesAsync() calls after this are part of THIS transaction
+// Changes are staged in the DB but not visible to other connections yet
 
-public async Task<T?> GetByIdAsNoTrackingAsync(int id)
-    => await _dbSet.AsNoTracking()
-        .FirstOrDefaultAsync(e => EF.Property<int>(e, "Id") == id);
-```
+// Commit — makes all staged changes permanent
+public async Task CommitAsync(IDbContextTransaction transaction)
+    => await transaction.CommitAsync();
+// After commit: changes are visible to all DB connections ✅
 
-Used in `PerformanceDemoAsync`:
-```csharp
-// AsNoTracking — loads data without snapshot overhead
-var users = await _unitOfWork.Users.GetAllAsNoTrackingAsync();
+// Rollback — undoes all staged changes
+public async Task RollbackAsync(IDbContextTransaction transaction)
+    => await transaction.RollbackAsync();
+// After rollback: DB is exactly as it was before BeginTransaction ✅
 ```
 
 ---
 
-## 5️⃣ Performance Demo Endpoint
+## 4️⃣ Scenario 1 — Bulk Create (All or Nothing)
 
-`GET /api/users/performance-demo` returns:
+```csharp
+await using var transaction = await _unitOfWork.BeginTransactionAsync();
+try
+{
+    foreach (var dto in dtos)
+    {
+        // Validate — any failure triggers rollback
+        var isUnique = await _unitOfWork.Users.IsEmailUniqueAsync(dto.Email);
+        if (!isUnique)
+            throw new InvalidOperationException($"Email '{dto.Email}' exists");
 
+        var user = new User { ... };
+        await _unitOfWork.Users.AddAsync(user);
+
+        // SaveChangesAsync inside transaction:
+        // Changes are staged in DB — NOT yet committed
+        // Still reversible if something fails later
+        await _unitOfWork.SaveChangesAsync();
+    }
+
+    // All users passed — commit everything
+    await _unitOfWork.CommitAsync(transaction);     // ← permanent ✅
+}
+catch (Exception ex)
+{
+    // One user failed — undo ALL users
+    await _unitOfWork.RollbackAsync(transaction);   // ← all undone ❌
+}
+```
+
+### Test — Success (all unique emails)
 ```json
-{
-  "totalUsers": 5,
-  "activeUsers": 4,
-  "byRole": [
-    { "role": "Admin",  "count": 2 },
-    { "role": "Member", "count": 3 }
-  ],
-  "optimizations": [
-    "AsNoTracking — no change tracking snapshot created",
-    "Compiled queries on GetByEmail, GetActiveUsers, GetByRole",
-    "Composite index on IsActive + Role columns",
-    "Filtered index on IsActive = 1 — smaller index",
-    "AsSplitQuery on GetWithAllRelatedAsync — no cartesian explosion"
-  ]
-}
+POST /api/users/bulk-create
+[
+  { "fullName": "Bulk User 1", "email": "bulk1@app.com", "role": "Member" },
+  { "fullName": "Bulk User 2", "email": "bulk2@app.com", "role": "Member" },
+  { "fullName": "Bulk User 3", "email": "bulk3@app.com", "role": "Admin"  }
+]
 ```
+Expected: `200 OK` — all 3 users created ✅
+
+### Test — Rollback (duplicate email mid-way)
+```json
+POST /api/users/bulk-create
+[
+  { "fullName": "New User 1", "email": "newbulk1@app.com", "role": "Member" },
+  { "fullName": "Duplicate",  "email": "bulk1@app.com",    "role": "Member" },
+  { "fullName": "New User 3", "email": "newbulk3@app.com", "role": "Admin"  }
+]
+```
+Expected: `409 Conflict` — zero users created (New User 1 rolled back too!) ❌
 
 ---
 
-## 🔄 Full Optimization Picture
+## 5️⃣ Scenario 2 — Intentional Rollback Demo
 
-```
-GET /api/users/performance-demo
-         │
-         ▼
-UserService.GetPerformanceDemoAsync()
-         │
-         ├── GetAllAsNoTrackingAsync()
-         │       └── AsNoTracking() → no snapshot ✅
-         │
-         ├── GroupBy(u => u.Role) → uses IX_Users_Role index ✅
-         │
-         └── Count(u => u.IsActive) → uses IX_Users_IsActive_Filtered ✅
+Shows that `SaveChangesAsync` inside a transaction does NOT permanently save:
 
-GET /api/users/1/with-all-related
-         │
-         ▼
-UserRepository.GetWithAllRelatedAsync(1)
-         │
-         ├── Include(u => u.Profile)
-         ├── Include(u => u.TeamMembers).ThenInclude(tm => tm.Team)
-         ├── Include(u => u.OwnedProjects)
-         ├── Include(u => u.AssignedTasks)
-         │
-         └── Global SplitQuery → separate SQL per Include ✅
-             No cartesian explosion ✅
+```csharp
+await using var transaction = await _unitOfWork.BeginTransactionAsync();
+try
+{
+    // User 1 saved inside transaction
+    await _unitOfWork.Users.AddAsync(user1);
+    await _unitOfWork.SaveChangesAsync();
+    // user1.Id is assigned BUT not visible outside this transaction yet
+
+    // User 2 saved inside transaction
+    await _unitOfWork.Users.AddAsync(user2);
+    await _unitOfWork.SaveChangesAsync();
+
+    // Simulate failure
+    throw new InvalidOperationException("Simulated failure");
+}
+catch
+{
+    await _unitOfWork.RollbackAsync(transaction);
+    // BOTH users are gone — even though SaveChangesAsync was called ✅
+    // SaveChangesAsync inside a transaction ≠ permanently committed
+}
 ```
+
+> 💡 **Key insight** — `SaveChangesAsync()` inside a transaction only writes to
+> the **transaction buffer**. It is NOT committed to the DB until `CommitAsync()` is called.
+> Calling `RollbackAsync()` undoes everything in the buffer.
+
+**Test:**
+```
+POST /api/users/transaction-rollback-demo  (no body needed)
+```
+Expected: `200 OK` with `success: false` — both users rolled back ✅
+
+---
+
+## 6️⃣ Scenario 3 — Savepoints (Partial Rollback)
+
+Savepoints let you roll back **part of a transaction** without losing everything.
+
+```csharp
+await using var transaction = await _unitOfWork.BeginTransactionAsync();
+
+// Create User 1 ✅
+await _unitOfWork.Users.AddAsync(user1);
+await _unitOfWork.SaveChangesAsync();
+
+// Mark a savepoint AFTER user 1
+await transaction.CreateSavepointAsync("AfterUser1");
+// "Remember this point — I may want to come back here"
+
+// Create User 2 — then something goes wrong
+await _unitOfWork.Users.AddAsync(user2);
+await _unitOfWork.SaveChangesAsync();
+
+// Roll back ONLY to the savepoint — User 1 is KEPT, User 2 is GONE
+await transaction.RollbackToSavepointAsync("AfterUser1");
+
+// Commit — only User 1 is saved
+await _unitOfWork.CommitAsync(transaction);  // ← User 1 committed ✅
+                                              // User 2 never existed ✅
+```
+
+### Savepoint Timeline
+```
+BEGIN TRANSACTION
+  ├── INSERT User 1                 ← staged ✅
+  ├── SAVEPOINT "AfterUser1"        ← checkpoint created
+  ├── INSERT User 2                 ← staged ✅
+  ├── ROLLBACK TO "AfterUser1"      ← User 2 undone, User 1 kept ✅
+  └── COMMIT                        ← only User 1 committed ✅
+```
+
+**Test:**
+```
+POST /api/users/savepoint-demo  (no body needed)
+```
+Expected: `200 OK` with `success: true` — only User 1 saved ✅
+
+---
+
+## 7️⃣ SaveChangesAsync Inside vs Outside Transaction
+
+| | Outside Transaction | Inside Transaction |
+|--|--------------------|--------------------|
+| When committed | Immediately ✅ | Only after `CommitAsync()` |
+| Can be undone | ❌ No | ✅ Yes — until `CommitAsync()` |
+| Visible to others | Immediately | Only after `CommitAsync()` |
+| Use when | Single operation | Multiple related operations |
+
+---
+
+## 8️⃣ `await using` — Why We Use It
+
+```csharp
+// await using — automatically disposes transaction when done
+await using var transaction = await _unitOfWork.BeginTransactionAsync();
+
+// If we forget to commit/rollback, disposal auto-rolls back ✅
+// This prevents transactions from staying open indefinitely
+```
+
+> 💡 Always use `await using` with transactions. If an unhandled exception occurs
+> and you forget to call `RollbackAsync`, the `await using` ensures the transaction
+> is disposed (which triggers an automatic rollback).
+
+---
+
+## 🌐 Endpoints Added in This Step
+
+| Method | Endpoint | Demonstrates |
+|--------|----------|-------------|
+| `POST` | `/api/users/bulk-create` | Atomic transaction — all or nothing |
+| `POST` | `/api/users/transaction-rollback-demo` | Intentional rollback |
+| `POST` | `/api/users/savepoint-demo` | Savepoint — partial rollback |
 
 ---
 
@@ -326,13 +282,12 @@ UserRepository.GetWithAllRelatedAsync(1)
 
 | Rule | Reason |
 |------|--------|
-| Add indexes on columns you filter or sort by | Full table scan without index |
-| Put most selective column first in composite index | Index only used if leftmost column is in WHERE |
-| Use filtered indexes for commonly filtered values | Smaller index = faster |
-| Set Split Query globally | Prevents cartesian explosion on all queries |
-| Use compiled queries for high-frequency queries | Eliminates LINQ→SQL translation overhead |
-| Always use AsNoTracking for read-only queries | No snapshot = less memory + faster |
-| Don't over-index | Too many indexes slow down INSERT/UPDATE/DELETE |
+| Always wrap multi-step operations in a transaction | Prevents partial data on failure |
+| Use `await using` for transactions | Auto-rollback on disposal if not committed |
+| `SaveChangesAsync` inside transaction ≠ committed | Must call `CommitAsync()` to persist |
+| Always call `RollbackAsync` in catch block | Prevents transaction staying open |
+| Use savepoints for complex multi-stage operations | Allows partial recovery without full rollback |
+| Keep transactions short | Long transactions hold DB locks — hurts concurrency |
 
 ---
 
@@ -348,42 +303,38 @@ dotnet ef database update
 # Run
 dotnet run
 
-# Test
-GET /api/users/performance-demo
-GET /api/users/1/with-all-related  ← uses global split query
+# Test in Swagger:
+# 1. POST /api/users/bulk-create         (with JSON body)
+# 2. POST /api/users/transaction-rollback-demo  (no body)
+# 3. POST /api/users/savepoint-demo      (no body)
 ```
 
 ---
 
-## ✅ Folder Structure After Step 9
+## ✅ Folder Structure After Step 10
 
 ```
 TaskManagerAPI/
-├── Data/
-│   ├── Configurations/
-│   │   └── UserConfiguration.cs        ← Updated (indexes added)
-│   └── Migrations/
-│       └── XXXXXX_AddPerformanceIndexes.cs  ← NEW
-├── Repositories/
-│   └── Implementations/
-│       └── UserRepository.cs           ← Updated (compiled queries)
+├── Controllers/
+│   └── UsersController.cs       ← Updated (3 new endpoints)
+├── DTOs/
+│   └── User/
+│       └── TransactionDemo.cs   ← NEW
 ├── Services/
 │   ├── Interfaces/
-│   │   └── IUserService.cs             ← Updated (performance demo)
+│   │   └── IUserService.cs      ← Updated (3 transaction methods)
 │   └── Implementations/
-│       └── UserService.cs              ← Updated (performance demo)
-├── Controllers/
-│   └── UsersController.cs              ← Updated (performance demo endpoint)
-└── Extensions/
-    └── ServiceCollectionExtensions.cs  ← Updated (global split query)
+│       └── UserService.cs       ← Updated (transaction implementations)
+└── UnitOfWork/
+    ├── IUnitOfWork.cs           ← Updated (BeginTransaction, Commit, Rollback)
+    └── UnitOfWork.cs            ← Updated (transaction implementations)
 ```
 
 ---
 
-## ✅ What's Next — Step 10: Transactions
+## ✅ What's Next — Step 11: Raw SQL
 In the next step we will:
-- **BeginTransaction** — start an explicit transaction
-- **Commit** — save all changes atomically
-- **Rollback** — undo all changes on failure
-- **Savepoints** — partial rollbacks within a transaction
-- Add transaction support to `UnitOfWork`
+- **FromSqlRaw** — execute raw SQL that returns entities
+- **ExecuteSqlRaw** — execute raw SQL for INSERT/UPDATE/DELETE
+- **Stored Procedures** — call stored procedures via EF Core
+- Add raw SQL methods to repositories

@@ -1,3 +1,4 @@
+using Microsoft.EntityFrameworkCore.Storage;
 using TaskManagerAPI.Repositories.Interfaces;
 using TaskManagerAPI.Services.Interfaces;
 
@@ -13,4 +14,15 @@ public interface IUnitOfWork : IDisposable
     // Single commit point - all repository changes
     // saved in ONE database transaction
     Task<int> SaveChangesAsync();
+
+    // Transactions
+    // BeginTransaction - start an explicit DB transaction
+    // All operatons after this share the same transaction
+    Task<IDbContextTransaction> BeginTransactionAsync();
+
+    // Commit - saves all pending changes and commits the transaction
+    Task CommitAsync(IDbContextTransaction transaction);
+
+    // Rollback - undones All changes since BeginTransaction
+    Task RollbackAsync(IDbContextTransaction transaction);
 }

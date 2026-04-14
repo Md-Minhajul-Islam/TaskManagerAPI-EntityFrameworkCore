@@ -119,6 +119,34 @@ public class UsersController : ControllerBase
         }
     }
 
+
+    // POST: api/users/bulk-create
+    // Demonstrates: atomic transaction — all or nothing
+    [HttpPost("bulk-create")]
+    public async Task<IActionResult> BulkCreate(List<CreateUserDto> dtos)
+    {
+        var result = await _userService.BulkCreateUsersAsync(dtos);
+        return result.Success ? Ok(result) : Conflict(result);
+    }
+
+    // POST: api/users/transaction-rollback-demo
+    // Demonstrates: intentional rollback
+    [HttpPost("transaction-rollback-demo")]
+    public async Task<IActionResult> TransactionRollbackDemo()
+    {
+        var result = await _userService.TransactionWithRollbackDemoAsync();
+        return Ok(result);
+    }
+
+    // POST: api/users/savepoint-demo
+    // Demonstrates: savepoints — partial rollback
+    [HttpPost("savepoint-demo")]
+    public async Task<IActionResult> SavepointDemo()
+    {
+        var result = await _userService.SavepointDemoAsync();
+        return Ok(result);
+    }
+
     // GET: api/users/performance-demo
     // Demonstrates: AsNoTracking + indexes + compiled queries + split query
     [HttpGet("performance-demo")]
