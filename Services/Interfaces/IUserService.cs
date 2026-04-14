@@ -22,6 +22,11 @@ public interface IUserService
     Task<EntityStateDemo> GetEntityStateDemoAsync(int id);
     Task<IEnumerable<UserResponseDto>> GetAllNoTrackingAsync();
 
+
+    // ── Transactions ───────────────────────────────────────────
+    Task<TransactionDemo> BulkCreateUsersAsync(List<CreateUserDto> dtos);
+    Task<TransactionDemo> TransactionWithRollbackDemoAsync();
+    Task<TransactionDemo> SavepointDemoAsync();
     // Performance Demo
     Task<object> GetPerformanceDemoAsync();
 
