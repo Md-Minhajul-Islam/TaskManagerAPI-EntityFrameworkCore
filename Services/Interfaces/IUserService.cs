@@ -21,4 +21,8 @@ public interface IUserService
     // ── Tracking Demo ──────────────────────────────────────────
     Task<EntityStateDemo> GetEntityStateDemoAsync(int id);
     Task<IEnumerable<UserResponseDto>> GetAllNoTrackingAsync();
+
+    // Performance Demo
+    Task<object> GetPerformanceDemoAsync();
+
 }

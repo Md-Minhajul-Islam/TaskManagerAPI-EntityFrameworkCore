@@ -38,6 +38,7 @@ public class Repository<T> : IRepository<T> where T : class
     // Each include is a function that takes IQueryable<T> and returns IQueryable<T>
     public async Task<T?> GetByIdWithIncludesAsync(
         int id,
+        bool splitQuery = false,
         params Func<IQueryable<T>, IQueryable<T>>[] includes
     )
     {
@@ -51,6 +52,9 @@ public class Repository<T> : IRepository<T> where T : class
         {
             query = include(query);
         }
+
+        if(splitQuery)
+            query = query.AsSplitQuery(); // separate SQL per Include — no cartesian explosion
 
         // EF Core needs a primary key filter — use FindAsync pattern via Where
         // Note: This works for entities with int Id (our BaseEntity)

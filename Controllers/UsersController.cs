@@ -118,4 +118,10 @@ public class UsersController : ControllerBase
             return NotFound(new { message = ex.Message });
         }
     }
+
+    // GET: api/users/performance-demo
+    // Demonstrates: AsNoTracking + indexes + compiled queries + split query
+    [HttpGet("performance-demo")]
+    public async Task<IActionResult> PerformanceDemo()
+        => Ok(await _userService.GetPerformanceDemoAsync());
 }

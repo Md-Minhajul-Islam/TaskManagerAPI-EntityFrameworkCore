@@ -15,7 +15,10 @@ namespace TaskManagerAPI.Repositories.Interfaces
 
 
         // Eager Loading
-        Task<T?> GetByIdWithIncludesAsync(int id, params Func<IQueryable<T>, IQueryable<T>>[] includes);
+        Task<T?> GetByIdWithIncludesAsync(
+            int id, 
+            bool splitQuery = false,
+            params Func<IQueryable<T>, IQueryable<T>>[] includes);
 
         Task<IEnumerable<T>> GetAllWithIncludesAsync(params Func<IQueryable<T>, IQueryable<T>>[] includes);
 
