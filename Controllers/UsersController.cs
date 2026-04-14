@@ -152,4 +152,47 @@ public class UsersController : ControllerBase
     [HttpGet("performance-demo")]
     public async Task<IActionResult> PerformanceDemo()
         => Ok(await _userService.GetPerformanceDemoAsync());
+
+
+    // GET: api/users/raw-sql/by-role/Admin
+    // Demonstrates: FromSqlRaw
+    [HttpGet("raw-sql/by-role/{role}")]
+    public async Task<IActionResult> GetByRoleRawSql(string role)
+        => Ok(await _userService.GetByRoleRawSqlAsync(role));
+
+    // GET: api/users/raw-sql/by-email?email=alice@app.com
+    // Demonstrates: FromSqlRaw with parameter
+    [HttpGet("raw-sql/by-email")]
+    public async Task<IActionResult> GetByEmailRawSql([FromQuery] string email)
+    {
+        var user = await _userService.GetByEmailRawSqlAsync(email);
+        return user is null ? NotFound() : Ok(user);
+    }
+
+    // PATCH: api/users/raw-sql/deactivate/1
+    // Demonstrates: ExecuteSqlRaw
+    [HttpPatch("raw-sql/deactivate/{id}")]
+    public async Task<IActionResult> DeactivateRawSql(int id)
+        => Ok(await _userService.DeactivateUserRawSqlAsync(id));
+
+    // PATCH: api/users/raw-sql/bulk-deactivate/Member
+    // Demonstrates: ExecuteSqlRaw bulk update
+    [HttpPatch("raw-sql/bulk-deactivate/{role}")]
+    public async Task<IActionResult> BulkDeactivateRawSql(string role)
+        => Ok(await _userService.BulkDeactivateByRoleAsync(role));
+
+    // GET: api/users/sp/active-by-role/Admin
+    // Demonstrates: Stored Procedure via FromSqlRaw
+    [HttpGet("sp/active-by-role/{role}")]
+    public async Task<IActionResult> GetActiveByRoleSp(string role)
+        => Ok(await _userService.GetActiveUsersByRoleSpAsync(role));
+
+    // PATCH: api/users/sp/update-role/1?newRole=Admin
+    // Demonstrates: Stored Procedure via ExecuteSqlRaw
+    [HttpPatch("sp/update-role/{id}")]
+    public async Task<IActionResult> UpdateRoleSp(
+        int id, [FromQuery] string newRole)
+        => Ok(await _userService.UpdateUserRoleSpAsync(id, newRole));
+
+
 }

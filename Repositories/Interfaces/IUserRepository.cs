@@ -22,4 +22,22 @@ public interface IUserRepository : IRepository<User>
     // ── Tracking / EntityState ─────────────────────────────────
     EntityState GetEntityState(User user);
     void DetachEntity(User user);
+
+
+    // ── Raw SQL ────────────────────────────────────────────────
+    // FromSqlRaw — executes raw SQL, returns tracked entities
+    Task<IEnumerable<User>> GetByRoleRawSqlAsync(string role);
+
+    // FromSqlRaw with parameters — safe from SQL injection
+    Task<User?>             GetByEmailRawSqlAsync(string email);
+
+    // ExecuteSqlRaw — for UPDATE/DELETE that don't return entities
+    Task<int>               DeactivateUserRawSqlAsync(int userId);
+    Task<int>               BulkDeactivateByRoleAsync(string role);
+
+    // Stored Procedure — call via FromSqlRaw
+    Task<IEnumerable<User>> GetActiveUsersByRoleSpAsync(string role);
+
+    // Stored Procedure — call via ExecuteSqlRaw
+    Task<int>               UpdateUserRoleSpAsync(int userId, string newRole);
 }

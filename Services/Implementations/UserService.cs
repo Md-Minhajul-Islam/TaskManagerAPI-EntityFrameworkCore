@@ -509,7 +509,76 @@ public class UserService : IUserService
         }
     }
 
+     // ── FromSqlRaw: get by role ────────────────────────────────────────────────
+    public async Task<IEnumerable<UserResponseDto>> GetByRoleRawSqlAsync(string role)
+    {
+        var users = await _unitOfWork.Users.GetByRoleRawSqlAsync(role);
+        return users.Select(MapToResponse);
+    }
 
+    // ── FromSqlRaw: get by email ───────────────────────────────────────────────
+    public async Task<UserResponseDto?> GetByEmailRawSqlAsync(string email)
+    {
+        var user = await _unitOfWork.Users.GetByEmailRawSqlAsync(email);
+        return user is null ? null : MapToResponse(user);
+    }
+
+    // ── ExecuteSqlRaw: deactivate single user ──────────────────────────────────
+    public async Task<RawSqlDemo> DeactivateUserRawSqlAsync(int userId)
+    {
+        var rows = await _unitOfWork.Users.DeactivateUserRawSqlAsync(userId);
+
+        return new RawSqlDemo
+        {
+            Success      = rows > 0,
+            Method       = "ExecuteSqlRaw",
+            SqlExecuted  = $"UPDATE Users SET IsActive = 0 WHERE Id = {userId}",
+            RowsAffected = rows,
+            Message      = rows > 0
+                            ? $"User {userId} deactivated"
+                            : $"User {userId} not found"
+        };
+    }
+
+    // ── ExecuteSqlRaw: bulk deactivate by role ─────────────────────────────────
+    public async Task<RawSqlDemo> BulkDeactivateByRoleAsync(string role)
+    {
+        var rows = await _unitOfWork.Users.BulkDeactivateByRoleAsync(role);
+
+        return new RawSqlDemo
+        {
+            Success      = true,
+            Method       = "ExecuteSqlRaw (Bulk)",
+            SqlExecuted  = $"UPDATE Users SET IsActive = 0 WHERE Role = '{role}'",
+            RowsAffected = rows,
+            Message      = $"{rows} users with role '{role}' deactivated"
+        };
+    }
+
+    // ── Stored Procedure: get active users by role ─────────────────────────────
+    public async Task<IEnumerable<UserResponseDto>> GetActiveUsersByRoleSpAsync(
+        string role)
+    {
+        var users = await _unitOfWork.Users.GetActiveUsersByRoleSpAsync(role);
+        return users.Select(MapToResponse);
+    }
+
+    // ── Stored Procedure: update user role ────────────────────────────────────
+    public async Task<RawSqlDemo> UpdateUserRoleSpAsync(int userId, string newRole)
+    {
+        var rows = await _unitOfWork.Users.UpdateUserRoleSpAsync(userId, newRole);
+
+        return new RawSqlDemo
+        {
+            Success      = rows > 0,
+            Method       = "ExecuteSqlRaw (Stored Procedure)",
+            SqlExecuted  = $"EXEC sp_UpdateUserRole {userId}, '{newRole}'",
+            RowsAffected = rows,
+            Message      = rows > 0
+                            ? $"User {userId} role updated to '{newRole}'"
+                            : $"User {userId} not found"
+        };
+    }
 
 
 
