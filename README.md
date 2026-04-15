@@ -1,348 +1,460 @@
-# TaskManagerAPI — Step 13: Data Seeding
+# TaskManagerAPI — Step 14: Architecture & Best Practices
 
 ## 📌 What This Step Covers
-- HasData — seed initial data inside entity configurations
-- Seed data applied automatically via migrations
-- How EF Core tracks changes to seeded data
-- Rules for writing good seed data
-- What gets generated in migration Up() and Down()
+- AutoMapper — replace manual mapping with profiles
+- MappingProfile — define mappings between entities and DTOs
+- IMapper — inject and use AutoMapper in services
+- ForMember — customize specific property mappings
+- DI Extensions — final cleanup and organization
+- Full architecture review
 
 ---
 
-## 🧠 What is Data Seeding?
+## 🧠 What is AutoMapper?
 
-Data Seeding pre-populates your database with initial data when migrations run.
+AutoMapper automatically copies properties from one object to another — removing the need for manual mapping code.
 
-```
-Without Seeding:
-  dotnet ef database update
-  → Empty database — no labels, no default users ❌
-  → Every developer must manually insert data ❌
-  → Inconsistent data across environments ❌
-
-With Seeding (HasData):
-  dotnet ef database update
-  → Labels inserted automatically ✅
-  → Default admin user inserted automatically ✅
-  → Every environment gets identical data ✅
-```
-
-### When to use seeding
-```
-✅ Static reference data  — Labels, Categories, Roles
-✅ Default admin user     — System needs at least one admin
-✅ Lookup tables          — Status codes, priority levels
-✅ Demo/test data         — Development environment defaults
-
-❌ User-generated content  — Posts, tasks, comments
-❌ Sensitive data          — Passwords, tokens, keys
-❌ Large datasets          — Use scripts instead
-❌ Environment-specific    — Use conditional seeding instead
-```
-
----
-
-## 1️⃣ HasData
-
-`HasData` is called inside `IEntityTypeConfiguration.Configure()` and tells EF Core to insert these rows when the migration runs.
-
-### Basic syntax
 ```csharp
-// In LabelConfiguration.cs
-builder.HasData(
-    new Label
+// WITHOUT AutoMapper — manual mapping (what we had before)
+private static UserResponseDto MapToResponse(User user) => new()
+{
+    Id        = user.Id,
+    FullName  = user.FullName,
+    Email     = user.Email,
+    Role      = user.Role,
+    IsActive  = user.IsActive,
+    CreatedAt = user.CreatedAt
+};
+// ❌ Repeated for every entity
+// ❌ Must update whenever you add a property
+// ❌ Easy to forget a field
+
+// WITH AutoMapper — one line
+var dto = _mapper.Map<UserResponseDto>(user);
+// ✅ AutoMapper copies matching properties automatically
+// ✅ Add a property to both classes — mapped automatically
+// ✅ Configured once in a Profile class
+```
+
+---
+
+## 1️⃣ MappingProfile
+
+A `Profile` class defines **how** AutoMapper maps between types.
+Created once — used everywhere in the application.
+
+```csharp
+public class UserMappingProfile : Profile
+{
+    public UserMappingProfile()
     {
-        Id        = 1,              // ← REQUIRED — hardcoded Id
-        Name      = "Bug",
-        Color     = "#FF0000",
-        CreatedAt = new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc)  // ← hardcoded
-    },
-    new Label
-    {
-        Id        = 2,
-        Name      = "Feature",
-        Color     = "#00FF00",
-        CreatedAt = new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc)
+        // Simple mapping — property names match, AutoMapper handles it
+        CreateMap<User, UserResponseDto>();
+
+        // Source → Destination
+        CreateMap<CreateUserDto, User>();
+
+        // With customization — ignore specific properties
+        CreateMap<UpdateUserDto, User>()
+            .ForMember(dest => dest.Id,        opt => opt.Ignore())
+            .ForMember(dest => dest.Email,     opt => opt.Ignore())
+            .ForMember(dest => dest.CreatedAt, opt => opt.Ignore());
+
+        // Nested mapping — maps UserProfile inside User
+        CreateMap<User, UserWithProfileDto>()
+            .ForMember(dest => dest.Profile,
+                       opt  => opt.MapFrom(src => src.Profile));
+
+        CreateMap<UserProfile, ProfileDto>();
     }
-    // ... add as many as you need
-);
-```
-
-### Why hardcode `Id`?
-```
-EF Core uses the Id to TRACK seeded rows between migrations.
-
-Without hardcoded Id:
-  Migration 1: inserts Label { Name="Bug" }  → DB assigns Id = 1
-  Migration 2: EF Core doesn't know it's the same row
-  → Tries to INSERT again = duplicate row ❌
-
-With hardcoded Id:
-  Migration 1: INSERT Label { Id=1, Name="Bug" }  ✅
-  Migration 2: EF Core knows Id=1 = the Bug label
-  → Compares current seed vs snapshot → generates UPDATE if changed ✅
-```
-
-### Why hardcode `CreatedAt`?
-```
-Without hardcoded CreatedAt:
-  Every time you run `dotnet ef migrations add`:
-  EF Core sees CreatedAt = DateTime.UtcNow (different each time!)
-  → Generates a new UPDATE migration for EVERY entity EVERY time ❌
-
-With hardcoded CreatedAt:
-  CreatedAt = new DateTime(2024, 1, 1, ...)  ← never changes
-  → EF Core sees no change → no spurious migration ✅
-```
-
----
-
-## 2️⃣ What Gets Generated in the Migration
-
-### Up() — INSERT statements
-```csharp
-protected override void Up(MigrationBuilder migrationBuilder)
-{
-    migrationBuilder.InsertData(
-        table: "Labels",
-        columns: new[] { "Id", "Name", "Color", "CreatedAt" },
-        values: new object[,]
-        {
-            { 1, "Bug",           "#FF0000", new DateTime(2024,1,1,...) },
-            { 2, "Feature",       "#00FF00", new DateTime(2024,1,1,...) },
-            { 3, "Improvement",   "#0000FF", new DateTime(2024,1,1,...) },
-            { 4, "Documentation", "#FFA500", new DateTime(2024,1,1,...) },
-            { 5, "Testing",       "#800080", new DateTime(2024,1,1,...) },
-            { 6, "Critical",      "#FF4500", new DateTime(2024,1,1,...) }
-        });
-
-    migrationBuilder.InsertData(
-        table: "Users",
-        columns: new[] { "Id", "FullName", "Email", "Role", "IsActive", "IsDeleted", "CreatedAt" },
-        values: new object[,]
-        {
-            { 1, "System Admin", "admin@taskmanager.com", "ADMIN",  true, false, new DateTime(2024,1,1,...) },
-            { 2, "Demo User",    "demo@taskmanager.com",  "MEMBER", true, false, new DateTime(2024,1,1,...) }
-        });
 }
 ```
 
-### Down() — DELETE statements
+### How AutoMapper matches properties
+```
+Source: User                    Destination: UserResponseDto
+──────────────────────────────────────────────────────────
+Id          int           ────► Id          int          ✅ same name + type
+FullName    string        ────► FullName    string       ✅ same name + type
+Email       string        ────► Email       string       ✅ same name + type
+Role        string        ────► Role        string       ✅ same name + type
+IsActive    bool          ────► IsActive    bool         ✅ same name + type
+CreatedAt   DateTime      ────► CreatedAt   DateTime     ✅ same name + type
+IsDeleted   bool          ────► (not in DTO)             ✅ skipped automatically
+RowVersion  byte[]        ────► (not in DTO)             ✅ skipped automatically
+```
+
+> 💡 AutoMapper maps by **convention** — matching property names are mapped automatically.
+> Extra properties on the source that don't exist on the destination are silently ignored.
+
+---
+
+## 2️⃣ ForMember — Customizing Mappings
+
+`ForMember` lets you customize how a specific property is mapped.
+
 ```csharp
-protected override void Down(MigrationBuilder migrationBuilder)
+// Ignore a property — don't map it at all
+CreateMap<UpdateUserDto, User>()
+    .ForMember(dest => dest.Id,    opt => opt.Ignore())
+    .ForMember(dest => dest.Email, opt => opt.Ignore());
+// Reason: Id and Email should never be changed on update
+
+// Map from a different source property
+CreateMap<User, UserWithProfileDto>()
+    .ForMember(
+        dest => dest.Profile,
+        opt  => opt.MapFrom(src => src.Profile));
+// Explicitly tells AutoMapper where Profile comes from
+
+// Compute a value
+CreateMap<User, UserResponseDto>()
+    .ForMember(
+        dest => dest.FullName,
+        opt  => opt.MapFrom(src => src.FullName.Trim()));
+// Transform the value during mapping
+
+// Use a constant value
+CreateMap<CreateUserDto, User>()
+    .ForMember(
+        dest => dest.IsActive,
+        opt  => opt.MapFrom(_ => true));
+// Always set IsActive = true on creation
+```
+
+---
+
+## 3️⃣ IMapper — Using AutoMapper in Services
+
+`IMapper` is injected via DI and provides the `Map<T>()` methods.
+
+```csharp
+public class UserService : IUserService
 {
-    // EF Core generates DELETE for every seeded row in Down()
-    migrationBuilder.DeleteData(table: "Labels", keyColumn: "Id", keyValue: 1);
-    migrationBuilder.DeleteData(table: "Labels", keyColumn: "Id", keyValue: 2);
-    migrationBuilder.DeleteData(table: "Labels", keyColumn: "Id", keyValue: 3);
-    migrationBuilder.DeleteData(table: "Labels", keyColumn: "Id", keyValue: 4);
-    migrationBuilder.DeleteData(table: "Labels", keyColumn: "Id", keyValue: 5);
-    migrationBuilder.DeleteData(table: "Labels", keyColumn: "Id", keyValue: 6);
-    migrationBuilder.DeleteData(table: "Users",  keyColumn: "Id", keyValue: 1);
-    migrationBuilder.DeleteData(table: "Users",  keyColumn: "Id", keyValue: 2);
+    private readonly IUnitOfWork _unitOfWork;
+    private readonly IMapper     _mapper;       // ← injected
+
+    public UserService(IUnitOfWork unitOfWork, IMapper mapper)
+    {
+        _unitOfWork = unitOfWork;
+        _mapper     = mapper;
+    }
 }
 ```
 
----
+### Three mapping patterns
 
-## 3️⃣ How EF Core Tracks Changes to Seeded Data
-
-EF Core stores the current seed data in `AppDbContextModelSnapshot.cs`.
-On the next `migrations add`, it **diffs** the new seed vs the snapshot.
-
-### Change a seeded value → UPDATE migration
+#### Pattern 1 — Source → New Destination
 ```csharp
-// Before:
-new Label { Id = 1, Name = "Bug", Color = "#FF0000" }
+// Map a single object
+var dto = _mapper.Map<UserResponseDto>(user);
 
-// After (you changed the color):
-new Label { Id = 1, Name = "Bug", Color = "#CC0000" }
+// Map a collection
+var dtos = _mapper.Map<IEnumerable<UserResponseDto>>(users);
 ```
 
-EF Core generates:
+#### Pattern 2 — Source → Existing Destination (update)
 ```csharp
-migrationBuilder.UpdateData(
-    table: "Labels",
-    keyColumn: "Id",
-    keyValue: 1,
-    column: "Color",
-    value: "#CC0000");       // ← only the changed column ✅
+// Map DTO properties onto an EXISTING entity
+// Only properties in the DTO are updated — others unchanged
+_mapper.Map(dto, user);
+// Before: user.FullName = "Alice"
+// dto.FullName = "Bob"
+// After:  user.FullName = "Bob"  ← updated by AutoMapper
+// user.Email unchanged            ← ForMember Ignore() protected it
 ```
 
-### Add a new seeded row → INSERT migration
+#### Pattern 3 — Source → New Entity for Create
 ```csharp
-// Added new label:
-new Label { Id = 7, Name = "Security", Color = "#000080" }
+// Create a new User entity from CreateUserDto
+var user = _mapper.Map<User>(dto);
+// AutoMapper creates a new User and copies all matching properties
+await _unitOfWork.Users.AddAsync(user);
 ```
 
-EF Core generates:
+---
+
+## 4️⃣ Registration
+
+### In `ServiceCollectionExtensions.cs`
 ```csharp
-migrationBuilder.InsertData(
-    table: "Labels",
-    columns: new[] { "Id", "Name", "Color", "CreatedAt" },
-    values: new object[] { 7, "Security", "#000080", ... });
+public static IServiceCollection AddAutoMapperProfiles(
+    this IServiceCollection services)
+{
+    // Scans the assembly for all Profile classes automatically
+    // Finds UserMappingProfile, registers all CreateMap definitions
+    services.AddAutoMapper(typeof(UserMappingProfile).Assembly);
+    return services;
+}
 ```
 
-### Remove a seeded row → DELETE migration
+### In `Program.cs`
 ```csharp
-// Removed Label with Id = 6 (Critical)
+builder.Services.AddAutoMapperProfiles();   // ← one clean line
 ```
 
-EF Core generates:
+### DI Lifetime
+AutoMapper is registered as **Singleton** by default — one instance for the app lifetime.
+`IMapper` is thread-safe and stateless — Singleton is appropriate.
+
+---
+
+## 5️⃣ Before vs After AutoMapper
+
+### Before — Manual Mapping
 ```csharp
-migrationBuilder.DeleteData(
-    table: "Labels",
-    keyColumn: "Id",
-    keyValue: 6);
+// Repeated in every service method
+private static UserResponseDto MapToResponse(User user) => new()
+{
+    Id        = user.Id,
+    FullName  = user.FullName,
+    Email     = user.Email,
+    Role      = user.Role,
+    IsActive  = user.IsActive,
+    CreatedAt = user.CreatedAt
+};
+
+// Usage:
+var users = await _unitOfWork.Users.GetAllAsync();
+return users.Select(MapToResponse);          // ← called everywhere
 ```
 
----
-
-## 4️⃣ Seeded Data in This Step
-
-### Labels (reference data)
-
-| Id | Name | Color | Purpose |
-|----|------|-------|---------|
-| 1 | Bug | `#FF0000` | Red — marks bugs |
-| 2 | Feature | `#00FF00` | Green — new features |
-| 3 | Improvement | `#0000FF` | Blue — enhancements |
-| 4 | Documentation | `#FFA500` | Orange — docs |
-| 5 | Testing | `#800080` | Purple — test tasks |
-| 6 | Critical | `#FF4500` | OrangeRed — urgent issues |
-
-### Users (default accounts)
-
-| Id | FullName | Email | Role |
-|----|----------|-------|------|
-| 1 | System Admin | admin@taskmanager.com | ADMIN |
-| 2 | Demo User | demo@taskmanager.com | MEMBER |
-
----
-
-## 5️⃣ Limitations of HasData
-
-```
-❌ Cannot seed shadow properties (CreatedBy, LastLoginAt)
-   → Use Interceptors or manual seeding instead
-
-❌ Cannot use DateTime.UtcNow — always hardcode dates
-   → Causes spurious migrations on every add
-
-❌ RowVersion cannot be seeded
-   → SQL Server auto-manages it
-
-❌ Navigation properties cannot be set in HasData
-   → Seed FK values only (e.g. UserId = 1, not User = someUser)
-
-❌ Not suitable for large datasets (1000+ rows)
-   → Use SQL scripts or a dedicated seeder class instead
-```
-
----
-
-## 6️⃣ HasData vs Other Seeding Approaches
-
-| Approach | How | When to use |
-|----------|-----|-------------|
-| `HasData` | Inside `IEntityTypeConfiguration` | Small, static reference data ✅ |
-| Migration `Sql()` | Raw SQL in migration `Up()` | Complex data with relationships |
-| `DbContext.Database.EnsureCreated` | One-time seed on startup | Dev/test only |
-| Dedicated Seeder class | Called from `Program.cs` | Large datasets, conditional seeding |
-
-### Migration `Sql()` approach (alternative)
+### After — AutoMapper
 ```csharp
-// In migration Up() — for complex seeding
-migrationBuilder.Sql(@"
-    IF NOT EXISTS (SELECT 1 FROM Labels WHERE Id = 1)
-    BEGIN
-        INSERT INTO Labels (Id, Name, Color, CreatedAt)
-        VALUES (1, 'Bug', '#FF0000', '2024-01-01')
-    END
-");
+// Defined ONCE in UserMappingProfile.cs
+CreateMap<User, UserResponseDto>();
+
+// Usage — everywhere in the service:
+var users = await _unitOfWork.Users.GetAllAsync();
+return _mapper.Map<IEnumerable<UserResponseDto>>(users);  // ← one line
 ```
 
 ---
 
-## 🔄 Full Seeding Flow
+## 6️⃣ Complete Architecture Review
+
+### Layer Responsibilities
 
 ```
-1. You add HasData() to LabelConfiguration + UserConfiguration
-
-2. dotnet ef migrations add SeedInitialData
-   │
-   EF Core reads current seed data from configuration
-   EF Core compares with AppDbContextModelSnapshot (empty for seed)
-   EF Core generates: InsertData() for all seeded rows
-   │
-   Creates: XXXXXX_SeedInitialData.cs
-
-3. dotnet ef database update
-   │
-   EF Core reads migration file
-   Runs Up(): INSERT INTO Labels ..., INSERT INTO Users ...
-   Records migration in __EFMigrationsHistory
-   │
-   Database: Labels table has 6 rows, Users table has 2 rows ✅
-
-4. Later: you change a seeded value
-   dotnet ef migrations add UpdateSeedData
-   │
-   EF Core diffs new seed vs snapshot
-   Generates: UpdateData() for changed columns only
-   │
-   dotnet ef database update
-   Runs UPDATE on only the changed rows ✅
+┌─────────────────────────────────────────────────────────────┐
+│                        Controller                           │
+│  - Receives HTTP request                                    │
+│  - Validates input (model binding)                          │
+│  - Calls Service                                            │
+│  - Returns HTTP response                                    │
+│  - NO business logic, NO data access, NO mapping           │
+└──────────────────────────┬──────────────────────────────────┘
+                           │ calls
+┌──────────────────────────▼──────────────────────────────────┐
+│                         Service                             │
+│  - Contains ALL business logic                              │
+│  - Validates business rules                                 │
+│  - Calls UnitOfWork / Repositories                          │
+│  - Uses AutoMapper to map entities ↔ DTOs                   │
+│  - NO HTTP concerns, NO direct DB queries                   │
+└──────────────────────────┬──────────────────────────────────┘
+                           │ calls
+┌──────────────────────────▼──────────────────────────────────┐
+│                       UnitOfWork                            │
+│  - Provides access to all repositories                      │
+│  - Single SaveChangesAsync for all repos                    │
+│  - Transaction management                                   │
+│  - NO business logic, NO mapping                           │
+└──────────────────────────┬──────────────────────────────────┘
+                           │ accesses
+┌──────────────────────────▼──────────────────────────────────┐
+│                       Repository                            │
+│  - Data access ONLY                                         │
+│  - Builds and executes queries                              │
+│  - Generic base + entity-specific methods                   │
+│  - NO business logic, NO mapping, NO HTTP                   │
+└──────────────────────────┬──────────────────────────────────┘
+                           │ uses
+┌──────────────────────────▼──────────────────────────────────┐
+│                      AppDbContext                           │
+│  - EF Core bridge to SQL Server                             │
+│  - Change tracking                                          │
+│  - Global Query Filters                                     │
+│  - SaveChangesAsync                                         │
+└──────────────────────────┬──────────────────────────────────┘
+                           │
+                    SQL Server DB
 ```
 
----
-
-## ⚡ Key Rules to Remember
-
-| Rule | Reason |
-|------|--------|
-| Always hardcode `Id` in seed data | EF Core uses it to track seed rows across migrations |
-| Always hardcode `CreatedAt` | Prevents spurious UPDATE migrations |
-| Only seed static reference data | Don't seed user-generated content |
-| Never seed passwords or secrets | Use environment variables / secret managers |
-| Seed FK values not navigation properties | `HasData` doesn't support object references |
-| Never modify seed data Id | EF Core will DELETE old + INSERT new instead of UPDATE |
-
----
-
-## 🚀 How to Run
-
-```bash
-# Create seed migration
-dotnet ef migrations add SeedInitialData --output-dir Data/Migrations
-
-# Apply — INSERTs seeded rows
-dotnet ef database update
-
-# Verify
-dotnet run
-# GET /api/users  → returns System Admin + Demo User ✅
-```
-
----
-
-## ✅ Folder Structure After Step 13
+### File Organization
 
 ```
 TaskManagerAPI/
-├── Data/
-│   ├── Configurations/
-│   │   ├── UserConfiguration.cs        ← Updated (HasData with 2 users)
-│   │   └── LabelConfiguration.cs      ← Updated (HasData with 6 labels)
-│   └── Migrations/
-│       └── XXXXXX_SeedInitialData.cs  ← NEW (InsertData for users + labels)
+│
+├── Controllers/           HTTP layer — routes only
+├── Services/              Business logic
+│   ├── Interfaces/        Contracts
+│   └── Implementations/   Logic
+├── Repositories/          Data access
+│   ├── Interfaces/        Contracts
+│   └── Implementations/   Queries
+├── UnitOfWork/            Transaction coordination
+├── Data/                  EF Core layer
+│   ├── AppDbContext.cs
+│   ├── Configurations/    IEntityTypeConfiguration per entity
+│   ├── Interceptors/      SaveChanges hooks
+│   └── Migrations/        DB schema history
+├── Models/                Domain entities
+├── DTOs/                  Data transfer objects
+│   ├── User/
+│   └── Common/
+├── MappingProfiles/       AutoMapper profiles    ← NEW
+└── Extensions/            DI registration helpers
 ```
 
 ---
 
-## ✅ What's Next — Step 14: Architecture & Best Practices
-In the next step we will:
-- **AutoMapper** — replace manual mapping with AutoMapper profiles
-- **DI Extensions** — final cleanup and organization
-- **Final wiring** — ensure all layers are connected correctly
-- **Review** — walk through the complete architecture end-to-end
+## 7️⃣ DI Registration Summary
+
+Everything is cleanly organized in `ServiceCollectionExtensions.cs`:
+
+```csharp
+// Program.cs — clean and minimal
+builder.Services.AddControllers();
+builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddSwaggerGen();
+
+builder.Services.AddDatabase(builder.Configuration);    // DbContext + Interceptors
+builder.Services.AddUnitOfWork();                        // IUnitOfWork
+builder.Services.AddApplicationServices();               // IUserService etc.
+builder.Services.AddAutoMapperProfiles();                // AutoMapper
+```
+
+| Method | Registers | Lifetime |
+|--------|-----------|---------|
+| `AddDatabase` | `AppDbContext`, `AuditInterceptor` | Scoped, Singleton |
+| `AddUnitOfWork` | `IUnitOfWork` | Scoped |
+| `AddApplicationServices` | `IUserService` | Scoped |
+| `AddAutoMapperProfiles` | `IMapper`, `MapperConfiguration` | Singleton |
+
+---
+
+## 8️⃣ Complete Request Flow — End to End
+
+```
+POST /api/users
+{ "fullName": "Alice", "email": "alice@app.com", "role": "Admin" }
+
+1. UsersController.Create(CreateUserDto dto)
+   └─ validates model binding
+
+2. UserService.CreateAsync(dto)
+   ├─ _unitOfWork.Users.IsEmailUniqueAsync("alice@app.com") → true
+   ├─ _mapper.Map<User>(dto)
+   │     AutoMapper: CreateUserDto → User
+   │     { FullName="Alice", Email="alice@app.com", Role="Admin" }
+   ├─ _unitOfWork.Users.AddAsync(user)
+   │     Repository: _dbSet.AddAsync(user)
+   │     EntityState → Added
+   ├─ _unitOfWork.SaveChangesAsync()
+   │     UnitOfWork → AppDbContext.SaveChangesAsync()
+   │     AuditInterceptor fires → sets CreatedBy = "System"
+   │     EF Core: INSERT INTO Users (...) VALUES (...)
+   │     EntityState → Unchanged
+   └─ _mapper.Map<UserResponseDto>(user)
+         AutoMapper: User → UserResponseDto
+         { Id=3, FullName="Alice", Email="alice@app.com", ... }
+
+3. Controller returns 201 Created
+   { "id": 3, "fullName": "Alice", "email": "alice@app.com", ... }
+```
+
+---
+
+## 9️⃣ All EF Core Topics — Covered ✅
+
+| Topic | Step | Where |
+|-------|------|-------|
+| ORM, DbContext, DbSet | Step 01 | `AppDbContext`, `Repository<T>` |
+| Connection String | Step 01 | `appsettings.json`, `ServiceCollectionExtensions` |
+| Change Tracking | Step 01, 08 | `AppDbContext.SaveChangesAsync`, `EntityStateDemo` |
+| SaveChangesAsync | Step 01 | `UnitOfWork.SaveChangesAsync` |
+| Migrations | Step 02 | `Data/Migrations/` |
+| Data Annotations | Step 03 | `Models/User.cs` |
+| Fluent API | Step 03 | `Data/Configurations/` |
+| IEntityTypeConfiguration | Step 03 | All `*Configuration.cs` files |
+| Primary Key | Step 04 | `UserConfiguration.HasKey()` |
+| Composite Key | Step 04 | `TeamMemberConfiguration` |
+| Alternate Key | Step 04 | `UserConfiguration.HasAlternateKey()` |
+| Foreign Key | Step 04 | `UserProfileConfiguration` |
+| One-to-One | Step 05 | `User ↔ UserProfile` |
+| One-to-Many | Step 05 | `Team → Projects`, `Project → Tasks` |
+| Many-to-Many | Step 05 | `User ↔ Team`, `Task ↔ Label` |
+| Cascade Delete | Step 05 | `DeleteBehavior.*` in all configs |
+| Eager Loading | Step 06 | `Include()`, `ThenInclude()` |
+| Lazy Loading | Step 06 | `UseLazyLoadingProxies()`, `virtual` |
+| Explicit Loading | Step 06 | `Entry().Reference/Collection().LoadAsync()` |
+| Where / Filter | Step 07 | `TaskRepository.GetByStatusAsync()` |
+| Select / Projection | Step 07 | `GetTaskSummariesAsync()` |
+| OrderBy / Sort | Step 07 | `GetSortedAsync()` |
+| GroupBy | Step 07 | `GetGroupedByRoleAsync()` |
+| Aggregation | Step 07 | `GetUserStatsAsync()` |
+| Pagination | Step 07 | `GetPagedAsync()`, `Skip/Take` |
+| AsNoTracking | Step 08 | `Repository.GetAllAsNoTrackingAsync()` |
+| EntityState | Step 08 | `GetEntityStateDemoAsync()` |
+| Indexes | Step 09 | `UserConfiguration.HasIndex()` |
+| Split Queries | Step 09 | `AsSplitQuery()`, global setting |
+| Compiled Queries | Step 09 | `EF.CompileAsyncQuery()` |
+| Transactions | Step 10 | `UnitOfWork.BeginTransactionAsync()` |
+| Savepoints | Step 10 | `CreateSavepointAsync()` |
+| FromSqlRaw | Step 11 | `UserRepository.GetByRoleRawSqlAsync()` |
+| ExecuteSqlRaw | Step 11 | `DeactivateUserRawSqlAsync()` |
+| Stored Procedures | Step 11 | `sp_GetActiveUsersByRole` |
+| Global Query Filters | Step 12 | `HasQueryFilter()` in `AppDbContext` |
+| Soft Delete | Step 12 | `SoftDeleteAsync()`, `IsDeleted` |
+| Concurrency | Step 12 | `RowVersion`, `DbUpdateConcurrencyException` |
+| Shadow Properties | Step 12 | `CreatedBy`, `LastLoginAt` |
+| Value Converters | Step 12 | `HasConversion()` on `Role` |
+| Interceptors | Step 12 | `AuditInterceptor` |
+| Data Seeding | Step 13 | `HasData()` in configurations |
+| Repository Pattern | Step 01-14 | `IRepository<T>`, `IUserRepository` |
+| Unit of Work | Step 01-14 | `IUnitOfWork`, `UnitOfWork` |
+| DTOs | Step 01-14 | `DTOs/User/`, `DTOs/Common/` |
+| AutoMapper | Step 14 | `UserMappingProfile`, `IMapper` |
+| Dependency Injection | Step 01-14 | `ServiceCollectionExtensions` |
+
+---
+
+## ⚡ Key Rules — Final Summary
+
+| Rule | Reason |
+|------|--------|
+| Controller only calls Service | HTTP concerns separate from business logic |
+| Service only calls UnitOfWork | Repositories never injected into controllers |
+| Repository never calls SaveChanges | UnitOfWork decides when to commit |
+| Always use DTOs on API boundaries | Never expose raw EF entities |
+| Use AsNoTracking for read-only | No snapshot overhead |
+| Use Eager Loading in production | Avoids N+1 queries |
+| Use Global Filters for soft delete | Auto-applied — never forgotten |
+| Always use parameterized raw SQL | Prevents SQL injection |
+| Wrap multi-step ops in transaction | All or nothing — prevents inconsistent data |
+| Always hardcode Id and dates in HasData | Prevents spurious migrations |
+| Use AutoMapper for all entity↔DTO mapping | Eliminates repetitive mapping code |
+
+---
+
+## 🚀 Final Project Complete! 🎉
+
+All 14 steps completed:
+
+```
+✅ Step 01 — EF Core Basics
+✅ Step 02 — Migrations
+✅ Step 03 — Entity Configuration
+✅ Step 04 — Keys
+✅ Step 05 — Relationships
+✅ Step 06 — Loading Related Data
+✅ Step 07 — Querying with LINQ
+✅ Step 08 — Tracking
+✅ Step 09 — Performance Optimization
+✅ Step 10 — Transactions
+✅ Step 11 — Raw SQL
+✅ Step 12 — Advanced Features
+✅ Step 13 — Data Seeding
+✅ Step 14 — Architecture & Best Practices
+```
