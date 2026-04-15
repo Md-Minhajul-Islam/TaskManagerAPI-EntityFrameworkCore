@@ -194,5 +194,42 @@ public class UsersController : ControllerBase
         int id, [FromQuery] string newRole)
         => Ok(await _userService.UpdateUserRoleSpAsync(id, newRole));
 
+    // DELETE: api/users/soft-delete/1
+    // Demonstrates: Soft Delete + Global Query Filter
+    [HttpDelete("soft-delete/{id}")]
+    public async Task<IActionResult> SoftDelete(int id)
+    {
+        await _userService.SoftDeleteAsync(id);
+        return Ok(new { message = $"User {id} soft deleted — still in DB but hidden by Global Filter" });
+    }
+
+    // GET: api/users/including-deleted
+    // Demonstrates: IgnoreQueryFilters
+    [HttpGet("including-deleted")]
+    public async Task<IActionResult> GetAllIncludingDeleted()
+        => Ok(await _userService.GetAllIncludingDeletedAsync());
+
+    // GET: api/users/1/advanced-demo
+    // Demonstrates: Shadow Properties + Global Query Filter
+    [HttpGet("{id}/advanced-demo")]
+    public async Task<IActionResult> AdvancedDemo(int id)
+        => Ok(await _userService.GetAdvancedFeaturesDemoAsync(id));
+
+    // PUT: api/users/1/concurrency-update
+    // Demonstrates: Concurrency with RowVersion
+    [HttpPut("{id}/concurrency-update")]
+    public async Task<IActionResult> ConcurrencyUpdate(
+        int id,
+        [FromBody] UpdateUserDto dto,
+        [FromHeader(Name = "X-Row-Version")] string rowVersionBase64)
+    {
+        if (string.IsNullOrEmpty(rowVersionBase64))
+            return BadRequest(new { message = "X-Row-Version header required" });
+
+        var rowVersion = Convert.FromBase64String(rowVersionBase64);
+        var result     = await _userService.UpdateWithConcurrencyAsync(id, dto, rowVersion);
+
+        return result.Success ? Ok(result) : Conflict(result);
+    }
 
 }

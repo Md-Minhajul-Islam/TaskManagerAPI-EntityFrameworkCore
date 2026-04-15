@@ -26,6 +26,17 @@ public class User : BaseEntity
     [Column("IsActive")]
     public bool IsActive { get; set; } = true;
 
+    [Required]
+    [Column("IsDeleted")]
+    public bool IsDeleted {get; set;} = false;
+
+    // Concurrency Token — EF Core uses this to detect conflicting updates
+    // SQL Server automatically updates this value on every UPDATE
+    // If two users try to update the same row simultaneously:
+    //   User A reads RowVersion = 1, updates → RowVersion becomes 2
+    //   User B reads RowVersion = 1, tries to update → fails! RowVersion is now 2
+    [Timestamp]
+    public byte[] RowVersion {get; set;} = Array.Empty<byte>();
 
     public virtual UserProfile?              Profile        { get; set; }
     public virtual ICollection<TeamMember>  TeamMembers    { get; set; } = new List<TeamMember>();

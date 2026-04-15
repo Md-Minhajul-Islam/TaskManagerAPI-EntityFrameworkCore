@@ -44,13 +44,37 @@ public class UserConfiguration : IEntityTypeConfiguration<User>
             .IsRequired()
             .HasMaxLength(20)
             .HasColumnName("Role")
-            .HasDefaultValue("Member");     // DB default value
+            .HasDefaultValue("Member")    // DB default value
+            .HasConversion(
+                v => v.ToUpper(),
+                v => v
+            );
+        // ── Value Converter ────────────────────────────────────────────────────────
+        // Store Role as uppercase in DB but use normal casing in C#
+        // C#: "admin" or "Admin" → DB: "ADMIN"
+        // DB: "ADMIN" → C#: "ADMIN" (reads back as stored)
+
+
+        // ── Concurrency Token ──────────────────────────────────────────────────────
+        // RowVersion is auto-managed by SQL Server
+        // EF Core includes it in every UPDATE WHERE clause
+        // If the value has changed since we loaded the entity → DbUpdateConcurrencyException
+        builder.Property(u => u.RowVersion)
+            .IsRowVersion()
+            .HasColumnName("RowVersion")
+            .IsRequired();
 
         // ── IsActive ───────────────────────────────────────────────
         builder.Property(u => u.IsActive)
             .IsRequired()
             .HasColumnName("IsActive")
             .HasDefaultValue(true);
+        
+        // IsDeleted
+        builder.Property(u => u.IsDeleted)
+            .IsRequired()
+            .HasColumnName("IsDeleted")
+            .HasDefaultValue(false);
 
         // ── CreatedAt ──────────────────────────────────────────────
         builder.Property(u => u.CreatedAt)
@@ -100,6 +124,23 @@ public class UserConfiguration : IEntityTypeConfiguration<User>
         //                      from another table (it's a real key constraint)
         builder.HasAlternateKey(u => u.Email)
             .HasName("AK_Users_Email");
-    
+
+
+        
+        // ── Shadow Properties ──────────────────────────────────────────────────────
+        // These columns exist in the DB but have NO property on the User class
+        // EF Core manages them internally — accessed via EF.Property<T>()
+
+        // Shadow property: LastLoginAt — tracks when user last logged in
+        // No C# property needed on User class — DB concern only
+        builder.Property<DateTime?>("LastLoginAt")
+            .HasColumnName("LastLoginAt")
+            .IsRequired(false);
+        
+        // Shadow property: CreatedBy — tracks who created the record
+        builder.Property<string>("CreatedBy")
+            .HasColumnName("CreatedBy")
+            .HasMaxLength(100)
+            .IsRequired(false);
     }
 }

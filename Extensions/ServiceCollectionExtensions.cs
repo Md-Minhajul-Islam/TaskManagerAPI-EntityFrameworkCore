@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using TaskManagerAPI.Data;
+using TaskManagerAPI.Data.Interceptors;
 using TaskManagerAPI.Services.Implementations;
 using TaskManagerAPI.Services.Interfaces;
 using TaskManagerAPI.UnitOfWork;
@@ -14,7 +15,9 @@ namespace TaskManagerAPI.Extensions
             IConfiguration configuration
         )
         {
-            services.AddDbContext<AppDbContext>(options =>
+            services.AddScoped<AuditInterceptor>();
+            
+            services.AddDbContext<AppDbContext>((ServiceProvider, options) =>
             options.UseSqlServer(
                 configuration.GetConnectionString("DefaultConnection"),
                 sqlOptions =>
@@ -27,6 +30,9 @@ namespace TaskManagerAPI.Extensions
                 // Navigation properties are loaded automatically when accessed
                 // Requires: virtual keyword on ALL navigation properties
                 .UseLazyLoadingProxies()
+                .AddInterceptors(
+                    ServiceProvider.GetRequiredService<AuditInterceptor>() 
+                )
                 .LogTo(Console.WriteLine, LogLevel.Information));
 
             return services;
@@ -49,6 +55,6 @@ namespace TaskManagerAPI.Extensions
             services.AddScoped<ITaskService, TaskService>();
             // Every new service gets registered here — Program.cs stays clean
             return services;
-    }
+        }
     }
 }
