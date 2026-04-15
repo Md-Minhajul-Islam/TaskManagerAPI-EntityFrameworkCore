@@ -11,6 +11,7 @@ builder.Services.AddOpenApi();
 builder.Services.AddDatabase(builder.Configuration);
 builder.Services.AddUnitOfWork();
 builder.Services.AddApplicationServices();
+builder.Services.AddAutoMapperProfiles();
 
 var app = builder.Build();
 

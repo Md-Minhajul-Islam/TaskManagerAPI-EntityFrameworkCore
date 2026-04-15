@@ -1,4 +1,5 @@
 using System.Transactions;
+using AutoMapper;
 using Microsoft.EntityFrameworkCore;
 using TaskManagerAPI.DTOs.User;
 using TaskManagerAPI.Models;
@@ -13,16 +14,20 @@ namespace TaskManagerAPI.Services.Implementations;
 public class UserService : IUserService
 {
     private readonly IUnitOfWork _unitOfWork;
+    private readonly IMapper _mapper;
 
-    public UserService(IUnitOfWork unitOfWork)
+    public UserService(IUnitOfWork unitOfWork, IMapper mapper)
     {
         _unitOfWork = unitOfWork;
+        _mapper = mapper;
     }
 
     public async Task<IEnumerable<UserResponseDto>> GetAllAsync()
     {
         var users = await _unitOfWork.Users.GetAllAsync();
-        return users.Select(MapToResponse);
+        // Before: return users.Select(MapToResponse);
+        // After:
+        return _mapper.Map<IEnumerable<UserResponseDto>>(users);
     }
 
     public async Task<UserResponseDto?> GetByIdAsync(int id)
@@ -37,12 +42,17 @@ public class UserService : IUserService
         if(!isUnique)
             throw new InvalidOperationException($"Email '{dto.Email}' is already taken");
 
-        var user = new User
-        {
-            FullName = dto.FullName,
-            Email = dto.Email,
-            Role = dto.Role
-        };
+        // Before:
+        // var user = new User
+        // {
+        //     FullName = dto.FullName,
+        //     Email = dto.Email,
+        //     Role = dto.Role
+        // };
+
+
+        // After:
+        var user = _mapper.Map<User>(dto); 
 
         await _unitOfWork.Users.AddAsync(user);
 
@@ -59,18 +69,24 @@ public class UserService : IUserService
         var user = await _unitOfWork.Users.GetByIdAsync(id);
         if (user is null) return null;
 
+        // Before:
         // Change Tracking detects these modifications automatically
         // EntityState goes: Unchanged → Modified (after property change)
-        user.FullName = dto.FullName;
-        user.Role     = dto.Role;
-        user.IsActive = dto.IsActive;
+        // user.FullName = dto.FullName;
+        // user.Role     = dto.Role;
+        // user.IsActive = dto.IsActive;
+
+        // After:
+        _mapper.Map(dto, user);
 
         _unitOfWork.Users.Update(user);
 
         // SaveChangesAsync — EF Core generates UPDATE SQL
         await _unitOfWork.SaveChangesAsync();
 
-        return MapToResponse(user);
+        // Before: return MapToResponse(user);
+        // After:
+        return _mapper.Map<UserResponseDto>(user);
     }
 
 
@@ -659,7 +675,7 @@ public class UserService : IUserService
             steps.Add($"Attempting update with RowVersion: {Convert.ToBase64String(rowVersion)}");
 
             await _unitOfWork.SaveChangesAsync();
-            steps.Add("Update successful — RowVersion matched ✅");
+            steps.Add("Update successful — RowVersion matched");
 
             return new AdvancedFeaturesDemo
             {

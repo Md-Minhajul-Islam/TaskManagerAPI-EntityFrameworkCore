@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using TaskManagerAPI.Data;
 using TaskManagerAPI.Data.Interceptors;
+using TaskManagerAPI.MappingProfiles;
 using TaskManagerAPI.Services.Implementations;
 using TaskManagerAPI.Services.Interfaces;
 using TaskManagerAPI.UnitOfWork;
@@ -56,5 +57,17 @@ namespace TaskManagerAPI.Extensions
             // Every new service gets registered here — Program.cs stays clean
             return services;
         }
+
+        // ── AutoMapper ─────────────────────────────────────────────────────────
+        // Scans the assembly for all Profile classes
+        // and registers them automatically
+        public static IServiceCollection AddAutoMapperProfiles(
+            this IServiceCollection services)
+        {
+            services.AddAutoMapper(cfg => { }, typeof(UserMappingProfile).Assembly);
+            return services;
+        }
     }
+
+    
 }
