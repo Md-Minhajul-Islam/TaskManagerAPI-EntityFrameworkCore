@@ -1,237 +1,7 @@
-# TaskManagerAPI — Step 14: Architecture & Best Practices
-
-## 📌 What This Step Covers
-- AutoMapper — replace manual mapping with profiles
-- MappingProfile — define mappings between entities and DTOs
-- IMapper — inject and use AutoMapper in services
-- ForMember — customize specific property mappings
-- DI Extensions — final cleanup and organization
-- Full architecture review
+# TaskManagerAPI —
 
 ---
-
-## 🧠 What is AutoMapper?
-
-AutoMapper automatically copies properties from one object to another — removing the need for manual mapping code.
-
-```csharp
-// WITHOUT AutoMapper — manual mapping (what we had before)
-private static UserResponseDto MapToResponse(User user) => new()
-{
-    Id        = user.Id,
-    FullName  = user.FullName,
-    Email     = user.Email,
-    Role      = user.Role,
-    IsActive  = user.IsActive,
-    CreatedAt = user.CreatedAt
-};
-// ❌ Repeated for every entity
-// ❌ Must update whenever you add a property
-// ❌ Easy to forget a field
-
-// WITH AutoMapper — one line
-var dto = _mapper.Map<UserResponseDto>(user);
-// ✅ AutoMapper copies matching properties automatically
-// ✅ Add a property to both classes — mapped automatically
-// ✅ Configured once in a Profile class
-```
-
----
-
-## 1️⃣ MappingProfile
-
-A `Profile` class defines **how** AutoMapper maps between types.
-Created once — used everywhere in the application.
-
-```csharp
-public class UserMappingProfile : Profile
-{
-    public UserMappingProfile()
-    {
-        // Simple mapping — property names match, AutoMapper handles it
-        CreateMap<User, UserResponseDto>();
-
-        // Source → Destination
-        CreateMap<CreateUserDto, User>();
-
-        // With customization — ignore specific properties
-        CreateMap<UpdateUserDto, User>()
-            .ForMember(dest => dest.Id,        opt => opt.Ignore())
-            .ForMember(dest => dest.Email,     opt => opt.Ignore())
-            .ForMember(dest => dest.CreatedAt, opt => opt.Ignore());
-
-        // Nested mapping — maps UserProfile inside User
-        CreateMap<User, UserWithProfileDto>()
-            .ForMember(dest => dest.Profile,
-                       opt  => opt.MapFrom(src => src.Profile));
-
-        CreateMap<UserProfile, ProfileDto>();
-    }
-}
-```
-
-### How AutoMapper matches properties
-```
-Source: User                    Destination: UserResponseDto
-──────────────────────────────────────────────────────────
-Id          int           ────► Id          int          ✅ same name + type
-FullName    string        ────► FullName    string       ✅ same name + type
-Email       string        ────► Email       string       ✅ same name + type
-Role        string        ────► Role        string       ✅ same name + type
-IsActive    bool          ────► IsActive    bool         ✅ same name + type
-CreatedAt   DateTime      ────► CreatedAt   DateTime     ✅ same name + type
-IsDeleted   bool          ────► (not in DTO)             ✅ skipped automatically
-RowVersion  byte[]        ────► (not in DTO)             ✅ skipped automatically
-```
-
-> 💡 AutoMapper maps by **convention** — matching property names are mapped automatically.
-> Extra properties on the source that don't exist on the destination are silently ignored.
-
----
-
-## 2️⃣ ForMember — Customizing Mappings
-
-`ForMember` lets you customize how a specific property is mapped.
-
-```csharp
-// Ignore a property — don't map it at all
-CreateMap<UpdateUserDto, User>()
-    .ForMember(dest => dest.Id,    opt => opt.Ignore())
-    .ForMember(dest => dest.Email, opt => opt.Ignore());
-// Reason: Id and Email should never be changed on update
-
-// Map from a different source property
-CreateMap<User, UserWithProfileDto>()
-    .ForMember(
-        dest => dest.Profile,
-        opt  => opt.MapFrom(src => src.Profile));
-// Explicitly tells AutoMapper where Profile comes from
-
-// Compute a value
-CreateMap<User, UserResponseDto>()
-    .ForMember(
-        dest => dest.FullName,
-        opt  => opt.MapFrom(src => src.FullName.Trim()));
-// Transform the value during mapping
-
-// Use a constant value
-CreateMap<CreateUserDto, User>()
-    .ForMember(
-        dest => dest.IsActive,
-        opt  => opt.MapFrom(_ => true));
-// Always set IsActive = true on creation
-```
-
----
-
-## 3️⃣ IMapper — Using AutoMapper in Services
-
-`IMapper` is injected via DI and provides the `Map<T>()` methods.
-
-```csharp
-public class UserService : IUserService
-{
-    private readonly IUnitOfWork _unitOfWork;
-    private readonly IMapper     _mapper;       // ← injected
-
-    public UserService(IUnitOfWork unitOfWork, IMapper mapper)
-    {
-        _unitOfWork = unitOfWork;
-        _mapper     = mapper;
-    }
-}
-```
-
-### Three mapping patterns
-
-#### Pattern 1 — Source → New Destination
-```csharp
-// Map a single object
-var dto = _mapper.Map<UserResponseDto>(user);
-
-// Map a collection
-var dtos = _mapper.Map<IEnumerable<UserResponseDto>>(users);
-```
-
-#### Pattern 2 — Source → Existing Destination (update)
-```csharp
-// Map DTO properties onto an EXISTING entity
-// Only properties in the DTO are updated — others unchanged
-_mapper.Map(dto, user);
-// Before: user.FullName = "Alice"
-// dto.FullName = "Bob"
-// After:  user.FullName = "Bob"  ← updated by AutoMapper
-// user.Email unchanged            ← ForMember Ignore() protected it
-```
-
-#### Pattern 3 — Source → New Entity for Create
-```csharp
-// Create a new User entity from CreateUserDto
-var user = _mapper.Map<User>(dto);
-// AutoMapper creates a new User and copies all matching properties
-await _unitOfWork.Users.AddAsync(user);
-```
-
----
-
-## 4️⃣ Registration
-
-### In `ServiceCollectionExtensions.cs`
-```csharp
-public static IServiceCollection AddAutoMapperProfiles(
-    this IServiceCollection services)
-{
-    // Scans the assembly for all Profile classes automatically
-    // Finds UserMappingProfile, registers all CreateMap definitions
-    services.AddAutoMapper(typeof(UserMappingProfile).Assembly);
-    return services;
-}
-```
-
-### In `Program.cs`
-```csharp
-builder.Services.AddAutoMapperProfiles();   // ← one clean line
-```
-
-### DI Lifetime
-AutoMapper is registered as **Singleton** by default — one instance for the app lifetime.
-`IMapper` is thread-safe and stateless — Singleton is appropriate.
-
----
-
-## 5️⃣ Before vs After AutoMapper
-
-### Before — Manual Mapping
-```csharp
-// Repeated in every service method
-private static UserResponseDto MapToResponse(User user) => new()
-{
-    Id        = user.Id,
-    FullName  = user.FullName,
-    Email     = user.Email,
-    Role      = user.Role,
-    IsActive  = user.IsActive,
-    CreatedAt = user.CreatedAt
-};
-
-// Usage:
-var users = await _unitOfWork.Users.GetAllAsync();
-return users.Select(MapToResponse);          // ← called everywhere
-```
-
-### After — AutoMapper
-```csharp
-// Defined ONCE in UserMappingProfile.cs
-CreateMap<User, UserResponseDto>();
-
-// Usage — everywhere in the service:
-var users = await _unitOfWork.Users.GetAllAsync();
-return _mapper.Map<IEnumerable<UserResponseDto>>(users);  // ← one line
-```
-
----
-
-## 6️⃣ Complete Architecture Review
+## Complete Architecture Review
 
 ### Layer Responsibilities
 
@@ -309,7 +79,7 @@ TaskManagerAPI/
 
 ---
 
-## 7️⃣ DI Registration Summary
+## DI Registration Summary
 
 Everything is cleanly organized in `ServiceCollectionExtensions.cs`:
 
@@ -334,7 +104,7 @@ builder.Services.AddAutoMapperProfiles();                // AutoMapper
 
 ---
 
-## 8️⃣ Complete Request Flow — End to End
+## Complete Request Flow — End to End
 
 ```
 POST /api/users
@@ -366,7 +136,7 @@ POST /api/users
 
 ---
 
-## 9️⃣ All EF Core Topics — Covered ✅
+## All EF Core Topics — Covered ✅
 
 | Topic | Step | Where |
 |-------|------|-------|
