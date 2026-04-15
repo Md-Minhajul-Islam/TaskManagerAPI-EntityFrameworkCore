@@ -1,412 +1,298 @@
-# TaskManagerAPI — Step 12: Advanced Features
+# TaskManagerAPI — Step 13: Data Seeding
 
 ## 📌 What This Step Covers
-- Soft Delete — mark as deleted instead of removing
-- Global Query Filters — auto-filter every query
-- Concurrency Handling — RowVersion / DbUpdateConcurrencyException
-- Shadow Properties — DB columns with no C# property
-- Value Converters — transform values between C# and DB
-- Interceptors — hook into EF Core save operations
+- HasData — seed initial data inside entity configurations
+- Seed data applied automatically via migrations
+- How EF Core tracks changes to seeded data
+- Rules for writing good seed data
+- What gets generated in migration Up() and Down()
 
 ---
 
-## 1️⃣ Soft Delete
+## 🧠 What is Data Seeding?
 
-Soft Delete means **never actually deleting a row**. Instead you set a flag `IsDeleted = true`.
+Data Seeding pre-populates your database with initial data when migrations run.
 
-### Why Soft Delete?
 ```
-Hard Delete (actual DELETE):
-  DELETE FROM Users WHERE Id = 1
-  → Row is gone forever ❌
-  → No audit trail ❌
-  → Related data can become orphaned ❌
+Without Seeding:
+  dotnet ef database update
+  → Empty database — no labels, no default users ❌
+  → Every developer must manually insert data ❌
+  → Inconsistent data across environments ❌
 
-Soft Delete (flag approach):
-  UPDATE Users SET IsDeleted = 1 WHERE Id = 1
-  → Row stays in DB ✅
-  → Audit trail preserved ✅
-  → Can be restored ✅
-  → Appears deleted to the application ✅
+With Seeding (HasData):
+  dotnet ef database update
+  → Labels inserted automatically ✅
+  → Default admin user inserted automatically ✅
+  → Every environment gets identical data ✅
 ```
 
-### Implementation
-```csharp
-// Instead of Remove()
-_dbSet.Remove(user);                    // ❌ hard delete
-
-// We do soft delete
-user.IsDeleted = true;
-_dbSet.Update(user);                    // ✅ soft delete
-await _context.SaveChangesAsync();
-// SQL: UPDATE Users SET IsDeleted = 1 WHERE Id = @id
+### When to use seeding
 ```
+✅ Static reference data  — Labels, Categories, Roles
+✅ Default admin user     — System needs at least one admin
+✅ Lookup tables          — Status codes, priority levels
+✅ Demo/test data         — Development environment defaults
 
----
-
-## 2️⃣ Global Query Filters
-
-A Global Query Filter is a **WHERE clause automatically added to every query** on an entity.
-Configured once — applied everywhere.
-
-### Setup in `AppDbContext`
-```csharp
-protected override void OnModelCreating(ModelBuilder modelBuilder)
-{
-    // Every query on User automatically gets WHERE IsDeleted = 0
-    modelBuilder.Entity<User>()
-        .HasQueryFilter(u => !u.IsDeleted);
-}
-```
-
-### How it works
-```csharp
-// You write:
-var users = await _context.Users.ToListAsync();
-
-// EF Core actually executes:
-// SELECT * FROM Users WHERE IsDeleted = 0
-//                           ↑ injected automatically!
-
-// You write:
-var user = await _context.Users.FindAsync(1);
-
-// EF Core actually executes:
-// SELECT * FROM Users WHERE Id = 1 AND IsDeleted = 0
-//                                     ↑ always added!
-```
-
-### Bypassing the filter — `IgnoreQueryFilters()`
-```csharp
-// See ALL users including soft-deleted ones
-var allUsers = await _context.Users
-    .IgnoreQueryFilters()           // ← bypass WHERE IsDeleted = 0
-    .ToListAsync();
-// SQL: SELECT * FROM Users   (no IsDeleted filter)
-```
-
-### Global Filter affects related data too
-```csharp
-// If Project has a Global Filter (IsDeleted = 0)
-// Loading a User's OwnedProjects automatically filters deleted projects
-var user = await _context.Users
-    .Include(u => u.OwnedProjects)   // ← only returns non-deleted projects!
-    .FirstOrDefaultAsync(u => u.Id == 1);
+❌ User-generated content  — Posts, tasks, comments
+❌ Sensitive data          — Passwords, tokens, keys
+❌ Large datasets          — Use scripts instead
+❌ Environment-specific    — Use conditional seeding instead
 ```
 
 ---
 
-## 3️⃣ Shadow Properties
+## 1️⃣ HasData
 
-Shadow Properties are **columns in the database that have NO C# property** on the entity class.
-EF Core manages them internally — accessed via `EF.Property<T>()` or `entry.Property()`.
+`HasData` is called inside `IEntityTypeConfiguration.Configure()` and tells EF Core to insert these rows when the migration runs.
 
-### When to use shadow properties
-```
-Use shadow properties for:
-  ✅ Audit fields you don't want polluting your model (CreatedBy, LastLoginAt)
-  ✅ DB-level concerns that shouldn't be in the domain model
-  ✅ Properties used only for filtering/sorting — not needed in C#
-```
-
-### Setup in configuration
+### Basic syntax
 ```csharp
-// In UserConfiguration.cs
-// No C# property on User class — exists only in DB
-builder.Property<DateTime?>("LastLoginAt")
-    .HasColumnName("LastLoginAt")
-    .IsRequired(false);
-
-builder.Property<string>("CreatedBy")
-    .HasColumnName("CreatedBy")
-    .HasMaxLength(100)
-    .IsRequired(false);
-```
-
-### Reading and writing shadow properties
-```csharp
-// WRITE — via ChangeTracker entry
-_context.Entry(user)
-    .Property<DateTime?>("LastLoginAt")
-    .CurrentValue = DateTime.UtcNow;
-
-// READ — via ChangeTracker entry
-var createdBy = _context.Entry(user)
-    .Property<string>("CreatedBy")
-    .CurrentValue;
-
-// USE IN QUERY — via EF.Property<T>()
-var recentLogins = await _context.Users
-    .OrderByDescending(u => EF.Property<DateTime?>(u, "LastLoginAt"))
-    .ToListAsync();
-```
-
----
-
-## 4️⃣ Value Converters
-
-Value Converters transform a property's value **between C# and the database**.
-
-```
-C# value  →  [converter]  →  DB value
-DB value  →  [converter]  →  C# value
-```
-
-### Our example — store Role as uppercase
-```csharp
-builder.Property(u => u.Role)
-    .HasConversion(
-        v => v.ToUpper(),   // C# → DB: "Admin" becomes "ADMIN"
-        v => v              // DB → C#: "ADMIN" stays "ADMIN"
-    );
-```
-
-### Common Value Converter uses
-```csharp
-// Store enum as string
-builder.Property(u => u.Status)
-    .HasConversion(
-        v => v.ToString(),              // C#: Status.Active → DB: "Active"
-        v => Enum.Parse<Status>(v)      // DB: "Active" → C#: Status.Active
-    );
-
-// Store bool as "Y"/"N" string
-builder.Property(u => u.IsActive)
-    .HasConversion(
-        v => v ? "Y" : "N",            // C#: true → DB: "Y"
-        v => v == "Y"                  // DB: "Y" → C#: true
-    );
-
-// Store list as comma-separated string
-builder.Property(u => u.Tags)
-    .HasConversion(
-        v => string.Join(",", v),       // C#: ["a","b"] → DB: "a,b"
-        v => v.Split(",").ToList()      // DB: "a,b" → C#: ["a","b"]
-    );
-```
-
----
-
-## 5️⃣ Concurrency Handling — RowVersion
-
-Concurrency conflicts happen when **two users try to update the same row simultaneously**.
-
-### The Problem
-```
-Time 1: User A reads row  → { FullName: "Alice", RowVersion: [1,2,3] }
-Time 1: User B reads row  → { FullName: "Alice", RowVersion: [1,2,3] }
-
-Time 2: User A saves      → { FullName: "Bob",   RowVersion: [4,5,6] }  ✅
-Time 2: User B tries save → { FullName: "Carol",  RowVersion: [1,2,3] }  ← stale!
-
-Without concurrency check:
-  User B's save OVERWRITES User A's changes silently ❌
-
-With RowVersion:
-  EF Core: WHERE Id = @id AND RowVersion = [1,2,3]
-  SQL Server: RowVersion is now [4,5,6] — WHERE fails → 0 rows affected
-  EF Core throws: DbUpdateConcurrencyException ✅
-```
-
-### Setup
-
-Model:
-```csharp
-[Timestamp]
-public byte[] RowVersion { get; set; } = Array.Empty<byte>();
-```
-
-Configuration:
-```csharp
-builder.Property(u => u.RowVersion)
-    .IsRowVersion()         // SQL Server auto-increments this on every UPDATE
-    .HasColumnName("RowVersion")
-    .IsRequired();
-```
-
-### Handling the exception
-```csharp
-try
-{
-    _context.Users.Update(user);
-    await _context.SaveChangesAsync();
-    // EF Core SQL:
-    // UPDATE Users SET FullName = @name
-    // WHERE Id = @id AND RowVersion = @rowVersion
-    // ↑ if RowVersion changed → 0 rows affected → exception thrown
-}
-catch (DbUpdateConcurrencyException ex)
-{
-    // Another user modified this record between our read and write
-    // Options:
-    //   1. Tell user to reload and try again (client wins)
-    //   2. Keep database values (database wins)
-    //   3. Merge changes manually
-    throw new InvalidOperationException(
-        "Record was modified by another user. Please reload and try again.");
-}
-```
-
-### Sending RowVersion from client
-```
-GET /api/users/1  →  response includes RowVersion as base64 string
-
-Client stores the RowVersion
-Client sends it back in X-Row-Version header on PUT request
-
-Server reads header → converts from base64 → bytes
-Server includes in WHERE clause via EF Core
-```
-
----
-
-## 6️⃣ Interceptors
-
-Interceptors hook into EF Core pipeline **before or after operations**.
-
-### Types of interceptors
-
-| Interceptor | Hooks into |
-|-------------|-----------|
-| `SaveChangesInterceptor` | `SaveChangesAsync` / `SaveChanges` |
-| `DbCommandInterceptor` | Every SQL command |
-| `DbConnectionInterceptor` | DB connection open/close |
-| `DbTransactionInterceptor` | Transaction begin/commit/rollback |
-
-### Our `AuditInterceptor`
-```csharp
-public class AuditInterceptor : SaveChangesInterceptor
-{
-    // Called BEFORE changes are saved to DB
-    public override ValueTask<InterceptionResult<int>> SavingChangesAsync(
-        DbContextEventData      eventData,
-        InterceptionResult<int> result,
-        CancellationToken       cancellationToken = default)
+// In LabelConfiguration.cs
+builder.HasData(
+    new Label
     {
-        var context = eventData.Context;
-
-        foreach (var entry in context.ChangeTracker.Entries<User>())
-        {
-            if (entry.State == EntityState.Added)
-            {
-                // Auto-set shadow property on every new User
-                entry.Property("CreatedBy").CurrentValue = "System";
-            }
-        }
-
-        return base.SavingChangesAsync(eventData, result, cancellationToken);
+        Id        = 1,              // ← REQUIRED — hardcoded Id
+        Name      = "Bug",
+        Color     = "#FF0000",
+        CreatedAt = new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc)  // ← hardcoded
+    },
+    new Label
+    {
+        Id        = 2,
+        Name      = "Feature",
+        Color     = "#00FF00",
+        CreatedAt = new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc)
     }
-}
-```
-
-### Registering the interceptor
-```csharp
-// In ServiceCollectionExtensions.cs
-services.AddSingleton<AuditInterceptor>();   // register in DI
-
-services.AddDbContext<AppDbContext>((sp, options) =>
-    options.UseSqlServer(connectionString)
-           .AddInterceptors(sp.GetRequiredService<AuditInterceptor>())
-           //                 ↑ EF Core calls this on every SaveChangesAsync
+    // ... add as many as you need
 );
 ```
 
-### Why Singleton for interceptor?
+### Why hardcode `Id`?
 ```
-Interceptor is registered as Singleton:
-  - Created ONCE for the lifetime of the app
-  - Shared across all DbContext instances
-  - Fine because AuditInterceptor has no state
+EF Core uses the Id to TRACK seeded rows between migrations.
 
-DbContext is Scoped (per request):
-  - New instance per HTTP request
-  - Each instance uses the same Singleton interceptor
+Without hardcoded Id:
+  Migration 1: inserts Label { Name="Bug" }  → DB assigns Id = 1
+  Migration 2: EF Core doesn't know it's the same row
+  → Tries to INSERT again = duplicate row ❌
+
+With hardcoded Id:
+  Migration 1: INSERT Label { Id=1, Name="Bug" }  ✅
+  Migration 2: EF Core knows Id=1 = the Bug label
+  → Compares current seed vs snapshot → generates UPDATE if changed ✅
 ```
 
----
-
-## 7️⃣ How Everything Works Together
-
+### Why hardcode `CreatedAt`?
 ```
-POST /api/users  (creates a new user)
-        │
-        ▼
-UserService.CreateAsync(dto)
-        │
-        ▼
-_unitOfWork.Users.AddAsync(user)      ← user.IsDeleted = false by default
-        │
-        ▼
-_unitOfWork.SaveChangesAsync()
-        │
-        ▼
-AuditInterceptor.SavingChangesAsync() ← interceptor fires!
-  └── entry.State == Added
-  └── sets shadow property "CreatedBy" = "System"
-        │
-        ▼
-EF Core SQL:
-  INSERT INTO Users (FullName, Email, Role, IsDeleted, CreatedBy, ...)
-  VALUES (@name, @email, 'MEMBER', 0, 'System', ...)
-  --                      ↑ value converter: "Member" → "MEMBER"
-  --                               ↑ global filter default
+Without hardcoded CreatedAt:
+  Every time you run `dotnet ef migrations add`:
+  EF Core sees CreatedAt = DateTime.UtcNow (different each time!)
+  → Generates a new UPDATE migration for EVERY entity EVERY time ❌
 
-
-DELETE /api/users/soft-delete/1
-        │
-        ▼
-UserService.SoftDeleteAsync(1)
-        │
-        ▼
-user.IsDeleted = true
-_unitOfWork.SaveChangesAsync()
-        │
-        ▼
-EF Core SQL:
-  UPDATE Users SET IsDeleted = 1, UpdatedAt = @now WHERE Id = 1
-
-GET /api/users  (after soft delete)
-        │
-        ▼
-EF Core SQL:
-  SELECT * FROM Users WHERE IsDeleted = 0
-  --                        ↑ Global Query Filter auto-injected!
-  -- User 1 NOT returned ✅
-
-GET /api/users/including-deleted
-        │
-        ▼
-_dbSet.IgnoreQueryFilters().ToListAsync()
-EF Core SQL:
-  SELECT * FROM Users   ← no filter!
-  -- User 1 IS returned ✅
+With hardcoded CreatedAt:
+  CreatedAt = new DateTime(2024, 1, 1, ...)  ← never changes
+  → EF Core sees no change → no spurious migration ✅
 ```
 
 ---
 
-## 🌐 Endpoints Added in This Step
+## 2️⃣ What Gets Generated in the Migration
 
-| Method | Endpoint | Demonstrates |
-|--------|----------|-------------|
-| `DELETE` | `/api/users/soft-delete/{id}` | Soft Delete |
-| `GET` | `/api/users` | Global Filter hides deleted |
-| `GET` | `/api/users/including-deleted` | IgnoreQueryFilters |
-| `GET` | `/api/users/{id}/advanced-demo` | Shadow Props + Global Filter |
-| `PUT` | `/api/users/{id}/concurrency-update` | RowVersion concurrency |
+### Up() — INSERT statements
+```csharp
+protected override void Up(MigrationBuilder migrationBuilder)
+{
+    migrationBuilder.InsertData(
+        table: "Labels",
+        columns: new[] { "Id", "Name", "Color", "CreatedAt" },
+        values: new object[,]
+        {
+            { 1, "Bug",           "#FF0000", new DateTime(2024,1,1,...) },
+            { 2, "Feature",       "#00FF00", new DateTime(2024,1,1,...) },
+            { 3, "Improvement",   "#0000FF", new DateTime(2024,1,1,...) },
+            { 4, "Documentation", "#FFA500", new DateTime(2024,1,1,...) },
+            { 5, "Testing",       "#800080", new DateTime(2024,1,1,...) },
+            { 6, "Critical",      "#FF4500", new DateTime(2024,1,1,...) }
+        });
+
+    migrationBuilder.InsertData(
+        table: "Users",
+        columns: new[] { "Id", "FullName", "Email", "Role", "IsActive", "IsDeleted", "CreatedAt" },
+        values: new object[,]
+        {
+            { 1, "System Admin", "admin@taskmanager.com", "ADMIN",  true, false, new DateTime(2024,1,1,...) },
+            { 2, "Demo User",    "demo@taskmanager.com",  "MEMBER", true, false, new DateTime(2024,1,1,...) }
+        });
+}
+```
+
+### Down() — DELETE statements
+```csharp
+protected override void Down(MigrationBuilder migrationBuilder)
+{
+    // EF Core generates DELETE for every seeded row in Down()
+    migrationBuilder.DeleteData(table: "Labels", keyColumn: "Id", keyValue: 1);
+    migrationBuilder.DeleteData(table: "Labels", keyColumn: "Id", keyValue: 2);
+    migrationBuilder.DeleteData(table: "Labels", keyColumn: "Id", keyValue: 3);
+    migrationBuilder.DeleteData(table: "Labels", keyColumn: "Id", keyValue: 4);
+    migrationBuilder.DeleteData(table: "Labels", keyColumn: "Id", keyValue: 5);
+    migrationBuilder.DeleteData(table: "Labels", keyColumn: "Id", keyValue: 6);
+    migrationBuilder.DeleteData(table: "Users",  keyColumn: "Id", keyValue: 1);
+    migrationBuilder.DeleteData(table: "Users",  keyColumn: "Id", keyValue: 2);
+}
+```
 
 ---
 
-## 🧪 Test Sequence
+## 3️⃣ How EF Core Tracks Changes to Seeded Data
+
+EF Core stores the current seed data in `AppDbContextModelSnapshot.cs`.
+On the next `migrations add`, it **diffs** the new seed vs the snapshot.
+
+### Change a seeded value → UPDATE migration
+```csharp
+// Before:
+new Label { Id = 1, Name = "Bug", Color = "#FF0000" }
+
+// After (you changed the color):
+new Label { Id = 1, Name = "Bug", Color = "#CC0000" }
+```
+
+EF Core generates:
+```csharp
+migrationBuilder.UpdateData(
+    table: "Labels",
+    keyColumn: "Id",
+    keyValue: 1,
+    column: "Color",
+    value: "#CC0000");       // ← only the changed column ✅
+```
+
+### Add a new seeded row → INSERT migration
+```csharp
+// Added new label:
+new Label { Id = 7, Name = "Security", Color = "#000080" }
+```
+
+EF Core generates:
+```csharp
+migrationBuilder.InsertData(
+    table: "Labels",
+    columns: new[] { "Id", "Name", "Color", "CreatedAt" },
+    values: new object[] { 7, "Security", "#000080", ... });
+```
+
+### Remove a seeded row → DELETE migration
+```csharp
+// Removed Label with Id = 6 (Critical)
+```
+
+EF Core generates:
+```csharp
+migrationBuilder.DeleteData(
+    table: "Labels",
+    keyColumn: "Id",
+    keyValue: 6);
+```
+
+---
+
+## 4️⃣ Seeded Data in This Step
+
+### Labels (reference data)
+
+| Id | Name | Color | Purpose |
+|----|------|-------|---------|
+| 1 | Bug | `#FF0000` | Red — marks bugs |
+| 2 | Feature | `#00FF00` | Green — new features |
+| 3 | Improvement | `#0000FF` | Blue — enhancements |
+| 4 | Documentation | `#FFA500` | Orange — docs |
+| 5 | Testing | `#800080` | Purple — test tasks |
+| 6 | Critical | `#FF4500` | OrangeRed — urgent issues |
+
+### Users (default accounts)
+
+| Id | FullName | Email | Role |
+|----|----------|-------|------|
+| 1 | System Admin | admin@taskmanager.com | ADMIN |
+| 2 | Demo User | demo@taskmanager.com | MEMBER |
+
+---
+
+## 5️⃣ Limitations of HasData
 
 ```
-1. GET  /api/users                     → see all users (none deleted)
-2. DELETE /api/users/soft-delete/1     → soft delete user 1
-3. GET  /api/users                     → user 1 NOT in list (global filter)
-4. GET  /api/users/including-deleted   → user 1 IS in list (filter ignored)
-5. GET  /api/users/1/advanced-demo     → see shadow props + filter counts
-6. PUT  /api/users/1/concurrency-update
-         Header: X-Row-Version: <base64 from GET>
-         Body: { "fullName": "...", "role": "...", "isActive": true }
+❌ Cannot seed shadow properties (CreatedBy, LastLoginAt)
+   → Use Interceptors or manual seeding instead
+
+❌ Cannot use DateTime.UtcNow — always hardcode dates
+   → Causes spurious migrations on every add
+
+❌ RowVersion cannot be seeded
+   → SQL Server auto-manages it
+
+❌ Navigation properties cannot be set in HasData
+   → Seed FK values only (e.g. UserId = 1, not User = someUser)
+
+❌ Not suitable for large datasets (1000+ rows)
+   → Use SQL scripts or a dedicated seeder class instead
+```
+
+---
+
+## 6️⃣ HasData vs Other Seeding Approaches
+
+| Approach | How | When to use |
+|----------|-----|-------------|
+| `HasData` | Inside `IEntityTypeConfiguration` | Small, static reference data ✅ |
+| Migration `Sql()` | Raw SQL in migration `Up()` | Complex data with relationships |
+| `DbContext.Database.EnsureCreated` | One-time seed on startup | Dev/test only |
+| Dedicated Seeder class | Called from `Program.cs` | Large datasets, conditional seeding |
+
+### Migration `Sql()` approach (alternative)
+```csharp
+// In migration Up() — for complex seeding
+migrationBuilder.Sql(@"
+    IF NOT EXISTS (SELECT 1 FROM Labels WHERE Id = 1)
+    BEGIN
+        INSERT INTO Labels (Id, Name, Color, CreatedAt)
+        VALUES (1, 'Bug', '#FF0000', '2024-01-01')
+    END
+");
+```
+
+---
+
+## 🔄 Full Seeding Flow
+
+```
+1. You add HasData() to LabelConfiguration + UserConfiguration
+
+2. dotnet ef migrations add SeedInitialData
+   │
+   EF Core reads current seed data from configuration
+   EF Core compares with AppDbContextModelSnapshot (empty for seed)
+   EF Core generates: InsertData() for all seeded rows
+   │
+   Creates: XXXXXX_SeedInitialData.cs
+
+3. dotnet ef database update
+   │
+   EF Core reads migration file
+   Runs Up(): INSERT INTO Labels ..., INSERT INTO Users ...
+   Records migration in __EFMigrationsHistory
+   │
+   Database: Labels table has 6 rows, Users table has 2 rows ✅
+
+4. Later: you change a seeded value
+   dotnet ef migrations add UpdateSeedData
+   │
+   EF Core diffs new seed vs snapshot
+   Generates: UpdateData() for changed columns only
+   │
+   dotnet ef database update
+   Runs UPDATE on only the changed rows ✅
 ```
 
 ---
@@ -415,66 +301,48 @@ EF Core SQL:
 
 | Rule | Reason |
 |------|--------|
-| Always use Soft Delete in production | Data recovery, audit trail, referential integrity |
-| Global Query Filters apply to related data via Include | Soft-deleted children are hidden automatically |
-| Use `IgnoreQueryFilters()` for admin/audit views | To see all records including deleted |
-| Shadow properties for DB-only concerns | Keeps domain model clean |
-| Always handle `DbUpdateConcurrencyException` | Silent data loss without it |
-| Register interceptors as Singleton | They are stateless — one instance is fine |
-| Value Converters run on every read and write | Keep them lightweight — no complex logic |
+| Always hardcode `Id` in seed data | EF Core uses it to track seed rows across migrations |
+| Always hardcode `CreatedAt` | Prevents spurious UPDATE migrations |
+| Only seed static reference data | Don't seed user-generated content |
+| Never seed passwords or secrets | Use environment variables / secret managers |
+| Seed FK values not navigation properties | `HasData` doesn't support object references |
+| Never modify seed data Id | EF Core will DELETE old + INSERT new instead of UPDATE |
 
 ---
 
 ## 🚀 How to Run
 
 ```bash
-# Create migration for new columns
-dotnet ef migrations add AddAdvancedFeatures --output-dir Data/Migrations
+# Create seed migration
+dotnet ef migrations add SeedInitialData --output-dir Data/Migrations
+
+# Apply — INSERTs seeded rows
 dotnet ef database update
 
-# Run
+# Verify
 dotnet run
+# GET /api/users  → returns System Admin + Demo User ✅
 ```
 
 ---
 
-## ✅ Folder Structure After Step 12
+## ✅ Folder Structure After Step 13
 
 ```
 TaskManagerAPI/
-├── Controllers/
-│   └── UsersController.cs                  ← Updated (4 new endpoints)
-├── DTOs/
-│   └── User/
-│       └── AdvancedFeaturesDemo.cs         ← NEW
 ├── Data/
-│   ├── AppDbContext.cs                     ← Updated (Global Query Filters)
 │   ├── Configurations/
-│   │   └── UserConfiguration.cs           ← Updated (Shadow Props, ValueConverter, RowVersion)
-│   ├── Interceptors/
-│   │   └── AuditInterceptor.cs            ← NEW
+│   │   ├── UserConfiguration.cs        ← Updated (HasData with 2 users)
+│   │   └── LabelConfiguration.cs      ← Updated (HasData with 6 labels)
 │   └── Migrations/
-│       └── XXXXXX_AddAdvancedFeatures.cs  ← NEW
-├── Extensions/
-│   └── ServiceCollectionExtensions.cs     ← Updated (interceptor registered)
-├── Models/
-│   └── User.cs                            ← Updated (RowVersion added)
-├── Repositories/
-│   ├── Interfaces/
-│   │   └── IUserRepository.cs             ← Updated (soft delete + shadow props)
-│   └── Implementations/
-│       └── UserRepository.cs              ← Updated (soft delete + shadow props)
-└── Services/
-    ├── Interfaces/
-    │   └── IUserService.cs                ← Updated (advanced methods)
-    └── Implementations/
-        └── UserService.cs                 ← Updated (advanced implementations)
+│       └── XXXXXX_SeedInitialData.cs  ← NEW (InsertData for users + labels)
 ```
 
 ---
 
-## ✅ What's Next — Step 13: Data Seeding
+## ✅ What's Next — Step 14: Architecture & Best Practices
 In the next step we will:
-- **HasData** — seed initial data in entity configurations
-- **Seed with migrations** — initial data applied when DB is created
-- Seed roles, default users, and labels
+- **AutoMapper** — replace manual mapping with AutoMapper profiles
+- **DI Extensions** — final cleanup and organization
+- **Final wiring** — ensure all layers are connected correctly
+- **Review** — walk through the complete architecture end-to-end
