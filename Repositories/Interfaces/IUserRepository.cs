@@ -40,4 +40,20 @@ public interface IUserRepository : IRepository<User>
 
     // Stored Procedure — call via ExecuteSqlRaw
     Task<int>               UpdateUserRoleSpAsync(int userId, string newRole);
+
+    // ── Soft Delete ────────────────────────────────────────────
+    Task SoftDeleteAsync(int id);
+
+    // ── Shadow Properties ──────────────────────────────────────
+    Task<string?> GetCreatedByAsync(int id);
+    Task          SetLastLoginAsync(int id);
+
+    // ── Concurrency ────────────────────────────────────────────
+    Task<User?> GetWithRowVersionAsync(int id);
+
+    // ── Ignore Global Filter ───────────────────────────────────
+    // Get ALL users including soft-deleted ones
+    Task<IEnumerable<User>> GetAllIncludingDeletedAsync();
+
+
 }

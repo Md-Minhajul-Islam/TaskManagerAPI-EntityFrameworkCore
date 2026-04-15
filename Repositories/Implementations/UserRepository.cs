@@ -202,6 +202,60 @@ public class UserRepository : Repository<User>, IUserRepository
             );
 
 
+    // ── SOFT DELETE ────────────────────────────────────────────────────────────
+    // Instead of DELETE we set IsDeleted = true
+    // Global Query Filter automatically hides these from all future queries
+    public async Task SoftDeleteAsync(int id)
+    {
+        var user = await _dbSet.FindAsync(id);
+        if (user is null) return;
 
+        user.IsDeleted = true;      // ← mark as deleted — NOT removed from DB
+        _dbSet.Update(user);
+        // Global filter: WHERE IsDeleted = 0
+        // After this: user won't appear in ANY query unless filter is ignored
+    }
+
+    // ── SHADOW PROPERTIES ──────────────────────────────────────────────────────
+    // Shadow properties are accessed via EF.Property<T>() — not C# properties
+    public async Task<string?> GetCreatedByAsync(int id)
+    {
+        var user = await _dbSet.FindAsync(id);
+        if (user is null) return null;
+
+        // Read shadow property value from EF Core's change tracker
+        return _context.Entry(user)
+            .Property<string>("CreatedBy")
+            .CurrentValue;
+    }
+
+    public async Task SetLastLoginAsync(int id)
+    {
+        var user = await _dbSet.FindAsync(id);
+        if (user is null) return;
+
+        // Set shadow property value — no C# property needed on User!
+        _context.Entry(user)
+            .Property<DateTime?>("LastLoginAt")
+            .CurrentValue = DateTime.UtcNow;
+
+        await _context.SaveChangesAsync();
+    }
+
+    // ── CONCURRENCY ────────────────────────────────────────────────────────────
+    public async Task<User?> GetWithRowVersionAsync(int id)
+        => await _dbSet
+            .AsNoTracking()
+            .FirstOrDefaultAsync(u => u.Id == id);
+
+    // ── IGNORE GLOBAL FILTER ───────────────────────────────────────────────────
+    // IgnoreQueryFilters() bypasses ALL global filters on this query
+    // Returns soft-deleted users too
+    public async Task<IEnumerable<User>> GetAllIncludingDeletedAsync()
+        => await _dbSet
+            .IgnoreQueryFilters()       // ← bypasses WHERE IsDeleted = 0
+            .ToListAsync();
 }
+
+
 

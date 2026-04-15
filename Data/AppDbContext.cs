@@ -29,6 +29,30 @@ public class AppDbContext : DbContext
         // So UserConfiguration.Configure() is called automatically here
         modelBuilder.ApplyConfigurationsFromAssembly(
             typeof(AppDbContext).Assembly);
+
+        
+        // ── Global Query Filters ───────────────────────────────────────────
+        // These filters are AUTOMATICALLY applied to EVERY query on these entities
+        // You never need to add .Where(u => !u.IsDeleted) manually again
+        // EF Core injects it into every SQL query behind the scenes
+
+        // Soft delete filter on User - only return non-deleted users
+        modelBuilder.Entity<User>()
+            .HasQueryFilter(u => !u.IsDeleted);
+        // SQL added automatically: WHERE IsDeleted = 0
+
+        // Soft delete filter on Project
+        modelBuilder.Entity<Project>()
+            .HasQueryFilter(p => !p.IsDeleted);
+
+        // Soft delete filter on TaskItem
+        modelBuilder.Entity<TaskItem>()
+            .HasQueryFilter(t => !t.IsDeleted);
+
+        // Soft delete filter on Comment
+        modelBuilder.Entity<Comment>()
+            .HasQueryFilter(c => !c.IsDeleted);
+
     }
 
     public override async Task<int> SaveChangesAsync(

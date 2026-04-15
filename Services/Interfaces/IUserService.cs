@@ -32,12 +32,20 @@ public interface IUserService
 
 
     // ── Raw SQL ────────────────────────────────────────────────
-Task<IEnumerable<UserResponseDto>> GetByRoleRawSqlAsync(string role);
-Task<UserResponseDto?>             GetByEmailRawSqlAsync(string email);
-Task<RawSqlDemo>                   DeactivateUserRawSqlAsync(int userId);
-Task<RawSqlDemo>                   BulkDeactivateByRoleAsync(string role);
-Task<IEnumerable<UserResponseDto>> GetActiveUsersByRoleSpAsync(string role);
-Task<RawSqlDemo>                   UpdateUserRoleSpAsync(int userId, string newRole);
+    Task<IEnumerable<UserResponseDto>> GetByRoleRawSqlAsync(string role);
+    Task<UserResponseDto?>             GetByEmailRawSqlAsync(string email);
+    Task<RawSqlDemo>                   DeactivateUserRawSqlAsync(int userId);
+    Task<RawSqlDemo>                   BulkDeactivateByRoleAsync(string role);
+    Task<IEnumerable<UserResponseDto>> GetActiveUsersByRoleSpAsync(string role);
+    Task<RawSqlDemo>                   UpdateUserRoleSpAsync(int userId, string newRole);
 
+
+    // ── Advanced Features ──────────────────────────────────────
+    Task                               SoftDeleteAsync(int id);
+    Task<IEnumerable<UserResponseDto>> GetAllIncludingDeletedAsync();
+    Task<AdvancedFeaturesDemo>         GetAdvancedFeaturesDemoAsync(int id);
+    Task<AdvancedFeaturesDemo>         UpdateWithConcurrencyAsync(
+                                        int id, UpdateUserDto dto,
+                                        byte[] rowVersion);
 
 }

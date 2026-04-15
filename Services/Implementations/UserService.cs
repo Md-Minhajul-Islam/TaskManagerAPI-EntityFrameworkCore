@@ -1,4 +1,5 @@
 using System.Transactions;
+using Microsoft.EntityFrameworkCore;
 using TaskManagerAPI.DTOs.User;
 using TaskManagerAPI.Models;
 using TaskManagerAPI.Services.Interfaces;
@@ -578,6 +579,113 @@ public class UserService : IUserService
                             ? $"User {userId} role updated to '{newRole}'"
                             : $"User {userId} not found"
         };
+    }
+
+    // ── SOFT DELETE ────────────────────────────────────────────────────────────
+    public async Task SoftDeleteAsync(int id)
+    {
+        await _unitOfWork.Users.SoftDeleteAsync(id);
+        await _unitOfWork.SaveChangesAsync();
+    }
+
+    // ── IGNORE GLOBAL FILTER ───────────────────────────────────────────────────
+    public async Task<IEnumerable<UserResponseDto>> GetAllIncludingDeletedAsync()
+    {
+        var users = await _unitOfWork.Users.GetAllIncludingDeletedAsync();
+        return users.Select(MapToResponse);
+    }
+
+    // ── ADVANCED FEATURES DEMO ─────────────────────────────────────────────────
+    public async Task<AdvancedFeaturesDemo> GetAdvancedFeaturesDemoAsync(int id)
+    {
+        var steps = new List<string>();
+
+        // ── Shadow Properties ──────────────────────────────────
+        var createdBy = await _unitOfWork.Users.GetCreatedByAsync(id);
+        steps.Add($"Shadow property 'CreatedBy' = '{createdBy ?? "null"}'");
+
+        await _unitOfWork.Users.SetLastLoginAsync(id);
+        steps.Add("Shadow property 'LastLoginAt' set to UtcNow");
+
+        // ── Global Query Filter ────────────────────────────────
+        var allUsers     = await _unitOfWork.Users.GetAllAsync();
+        var allWithDeleted = await _unitOfWork.Users.GetAllIncludingDeletedAsync();
+        steps.Add($"GetAllAsync returns {allUsers.Count()} users " +
+                $"(Global filter: IsDeleted = 0)");
+        steps.Add($"GetAllIncludingDeletedAsync returns {allWithDeleted.Count()} users " +
+                $"(IgnoreQueryFilters applied)");
+
+        return new AdvancedFeaturesDemo
+        {
+            Success     = true,
+            Feature     = "Shadow Properties + Global Query Filter",
+            Explanation = "Shadow properties have no C# property but exist in DB. " +
+                        "Global filters auto-filter every query.",
+            Steps       = steps.ToArray(),
+            Data        = new
+            {
+                CreatedBy         = createdBy,
+                ActiveUsersCount  = allUsers.Count(),
+                AllUsersCount     = allWithDeleted.Count()
+            }
+        };
+    }
+
+    // ── CONCURRENCY HANDLING ───────────────────────────────────────────────────
+    public async Task<AdvancedFeaturesDemo> UpdateWithConcurrencyAsync(
+        int id, UpdateUserDto dto, byte[] rowVersion)
+    {
+        var steps = new List<string>();
+
+        try
+        {
+            var user = await _unitOfWork.Users.GetByIdAsync(id);
+            if (user is null)
+                return new AdvancedFeaturesDemo
+                {
+                    Success  = false,
+                    Feature  = "Concurrency",
+                    Explanation = "User not found"
+                };
+
+            // Set the RowVersion from the client
+            // EF Core will include this in the WHERE clause:
+            // UPDATE Users SET ... WHERE Id = @id AND RowVersion = @rowVersion
+            _unitOfWork.Users.Update(user);
+            user.FullName = dto.FullName;
+            user.Role     = dto.Role;
+            user.IsActive = dto.IsActive;
+
+            steps.Add($"Attempting update with RowVersion: {Convert.ToBase64String(rowVersion)}");
+
+            await _unitOfWork.SaveChangesAsync();
+            steps.Add("Update successful — RowVersion matched ✅");
+
+            return new AdvancedFeaturesDemo
+            {
+                Success     = true,
+                Feature     = "Concurrency with RowVersion",
+                Explanation = "Update succeeded — no concurrent modification detected",
+                Steps       = steps.ToArray(),
+                Data        = MapToResponse(user)
+            };
+        }
+        catch (DbUpdateConcurrencyException ex)
+        {
+            // This fires when another user modified the same row between
+            // our read and our write — RowVersion no longer matches
+            steps.Add($"DbUpdateConcurrencyException: {ex.Message}");
+            steps.Add("Another user modified this record — update rejected ❌");
+
+            return new AdvancedFeaturesDemo
+            {
+                Success     = false,
+                Feature     = "Concurrency with RowVersion",
+                Explanation = "Concurrency conflict detected — another user " +
+                            "modified this record. Please reload and try again.",
+                Steps       = steps.ToArray()
+            };
+        }
     }
 
 

@@ -1,333 +1,413 @@
-# TaskManagerAPI — Step 11: Raw SQL
+# TaskManagerAPI — Step 12: Advanced Features
 
 ## 📌 What This Step Covers
-- FromSqlRaw — execute raw SELECT SQL that returns entities
-- ExecuteSqlRaw — execute raw UPDATE/DELETE/INSERT SQL
-- Stored Procedures — create and call via EF Core
-- When to use raw SQL vs LINQ
-- SQL injection protection with parameterized queries
+- Soft Delete — mark as deleted instead of removing
+- Global Query Filters — auto-filter every query
+- Concurrency Handling — RowVersion / DbUpdateConcurrencyException
+- Shadow Properties — DB columns with no C# property
+- Value Converters — transform values between C# and DB
+- Interceptors — hook into EF Core save operations
 
 ---
 
-## 🧠 Why Raw SQL?
+## 1️⃣ Soft Delete
 
-EF Core's LINQ is powerful but sometimes you need raw SQL:
+Soft Delete means **never actually deleting a row**. Instead you set a flag `IsDeleted = true`.
 
+### Why Soft Delete?
 ```
-Use LINQ when:
-  ✅ Standard CRUD operations
-  ✅ Simple filtering and sorting
-  ✅ Readable, maintainable code
+Hard Delete (actual DELETE):
+  DELETE FROM Users WHERE Id = 1
+  → Row is gone forever ❌
+  → No audit trail ❌
+  → Related data can become orphaned ❌
 
-Use Raw SQL when:
-  ✅ Complex queries LINQ can't express well
-  ✅ Performance-critical queries needing specific SQL hints
-  ✅ Calling existing stored procedures
-  ✅ Bulk UPDATE/DELETE without loading entities
-  ✅ Database-specific features (window functions, CTEs etc.)
+Soft Delete (flag approach):
+  UPDATE Users SET IsDeleted = 1 WHERE Id = 1
+  → Row stays in DB ✅
+  → Audit trail preserved ✅
+  → Can be restored ✅
+  → Appears deleted to the application ✅
 ```
 
----
-
-## 1️⃣ FromSqlRaw
-
-`FromSqlRaw` executes a raw SQL `SELECT` and maps results to **tracked entities**.
-
-### Basic usage
+### Implementation
 ```csharp
-// Simple raw SQL
-_dbSet.FromSqlRaw("SELECT * FROM Users WHERE Role = {0}", role)
+// Instead of Remove()
+_dbSet.Remove(user);                    // ❌ hard delete
 
-// {0} = SQL parameter — EF Core replaces it safely
-// SQL Server receives: WHERE Role = @p0
-// NEVER use string interpolation: $"WHERE Role = '{role}'"  ← SQL INJECTION ❌
-```
-
-### Important rules for `FromSqlRaw`
-```csharp
-// ✅ CORRECT — parameterized (safe)
-_dbSet.FromSqlRaw("SELECT * FROM Users WHERE Role = {0}", role)
-
-// ❌ WRONG — string concatenation (SQL injection risk!)
-_dbSet.FromSqlRaw($"SELECT * FROM Users WHERE Role = '{role}'")
-
-// ✅ The SQL must SELECT all columns the entity needs
-// EF Core maps result to User entity — all columns must be present
-_dbSet.FromSqlRaw("SELECT * FROM Users WHERE Role = {0}", role)
-//                  ↑ SELECT * ensures all User properties are mapped
-
-// ✅ You can chain LINQ after FromSqlRaw
-_dbSet
-    .FromSqlRaw("SELECT * FROM Users WHERE IsActive = 1")
-    .Where(u => u.Role == "Admin")   // ← LINQ applied on top of raw SQL
-    .OrderBy(u => u.FullName)
-    .ToListAsync()
-```
-
-### With `AsNoTracking`
-```csharp
-// Read-only raw SQL query — no tracking overhead
-_dbSet
-    .FromSqlRaw("SELECT * FROM Users WHERE Role = {0}", role)
-    .AsNoTracking()
-    .ToListAsync()
-```
-
----
-
-## 2️⃣ ExecuteSqlRaw
-
-`ExecuteSqlRaw` executes raw SQL that **does NOT return entities**.
-Used for `UPDATE`, `DELETE`, `INSERT` operations.
-Returns the number of rows affected.
-
-### Basic usage
-```csharp
-// UPDATE — deactivate a single user
-await _context.Database.ExecuteSqlRawAsync(
-    "UPDATE Users SET IsActive = 0, UpdatedAt = GETUTCDATE() WHERE Id = {0}",
-    userId);
-// Returns: 1 if updated, 0 if not found
-
-// UPDATE — bulk update all users with a role
-await _context.Database.ExecuteSqlRawAsync(
-    "UPDATE Users SET IsActive = 0, UpdatedAt = GETUTCDATE() WHERE Role = {0}",
-    role);
-// Returns: number of rows updated
-```
-
-### Why use `ExecuteSqlRaw` for bulk updates?
-```csharp
-// Without ExecuteSqlRaw — loads ALL entities then updates one by one
-var users = await _context.Users
-    .Where(u => u.Role == "Member")
-    .ToListAsync();           // ← loads 1000 users into memory ❌
-
-foreach (var user in users)
-    user.IsActive = false;    // ← 1000 individual UPDATEs ❌
-
+// We do soft delete
+user.IsDeleted = true;
+_dbSet.Update(user);                    // ✅ soft delete
 await _context.SaveChangesAsync();
-
-// With ExecuteSqlRaw — ONE SQL statement, nothing loaded into memory
-await _context.Database.ExecuteSqlRawAsync(
-    "UPDATE Users SET IsActive = 0 WHERE Role = {0}", "Member");
-// ← ONE UPDATE statement, zero entities in memory ✅
+// SQL: UPDATE Users SET IsDeleted = 1 WHERE Id = @id
 ```
 
 ---
 
-## 3️⃣ Stored Procedures
+## 2️⃣ Global Query Filters
 
-Stored Procedures are pre-compiled SQL scripts stored in the database.
+A Global Query Filter is a **WHERE clause automatically added to every query** on an entity.
+Configured once — applied everywhere.
 
-### Two types of stored procedures
-
-| Type | Returns | Call with |
-|------|---------|-----------|
-| Returns rows | `IEnumerable<User>` | `FromSqlRaw("EXEC sp_Name {0}", param)` |
-| No rows returned | `int` rows affected | `ExecuteSqlRaw("EXEC sp_Name {0}, {1}", p1, p2)` |
-
-### Our stored procedures
-
-#### `sp_GetActiveUsersByRole` — returns rows
-```sql
-CREATE PROCEDURE sp_GetActiveUsersByRole
-    @Role NVARCHAR(20)
-AS
-BEGIN
-    SELECT *
-    FROM   Users
-    WHERE  Role     = @Role
-      AND  IsActive = 1
-    ORDER  BY FullName;
-END
+### Setup in `AppDbContext`
+```csharp
+protected override void OnModelCreating(ModelBuilder modelBuilder)
+{
+    // Every query on User automatically gets WHERE IsDeleted = 0
+    modelBuilder.Entity<User>()
+        .HasQueryFilter(u => !u.IsDeleted);
+}
 ```
 
-Called via `FromSqlRaw`:
+### How it works
 ```csharp
-await _dbSet
-    .FromSqlRaw("EXEC sp_GetActiveUsersByRole {0}", role)
+// You write:
+var users = await _context.Users.ToListAsync();
+
+// EF Core actually executes:
+// SELECT * FROM Users WHERE IsDeleted = 0
+//                           ↑ injected automatically!
+
+// You write:
+var user = await _context.Users.FindAsync(1);
+
+// EF Core actually executes:
+// SELECT * FROM Users WHERE Id = 1 AND IsDeleted = 0
+//                                     ↑ always added!
+```
+
+### Bypassing the filter — `IgnoreQueryFilters()`
+```csharp
+// See ALL users including soft-deleted ones
+var allUsers = await _context.Users
+    .IgnoreQueryFilters()           // ← bypass WHERE IsDeleted = 0
     .ToListAsync();
-// EF Core maps each result row to a User entity ✅
+// SQL: SELECT * FROM Users   (no IsDeleted filter)
 ```
 
-#### `sp_UpdateUserRole` — no rows returned
-```sql
-CREATE PROCEDURE sp_UpdateUserRole
-    @UserId  INT,
-    @NewRole NVARCHAR(20)
-AS
-BEGIN
-    UPDATE Users
-    SET    Role      = @NewRole,
-           UpdatedAt = GETUTCDATE()
-    WHERE  Id = @UserId;
-END
-```
-
-Called via `ExecuteSqlRaw`:
+### Global Filter affects related data too
 ```csharp
-await _context.Database.ExecuteSqlRawAsync(
-    "EXEC sp_UpdateUserRole {0}, {1}",
-    userId, newRole);
-// Returns: 1 if updated, 0 if not found
+// If Project has a Global Filter (IsDeleted = 0)
+// Loading a User's OwnedProjects automatically filters deleted projects
+var user = await _context.Users
+    .Include(u => u.OwnedProjects)   // ← only returns non-deleted projects!
+    .FirstOrDefaultAsync(u => u.Id == 1);
 ```
 
-### Creating stored procedures via migrations
+---
+
+## 3️⃣ Shadow Properties
+
+Shadow Properties are **columns in the database that have NO C# property** on the entity class.
+EF Core manages them internally — accessed via `EF.Property<T>()` or `entry.Property()`.
+
+### When to use shadow properties
+```
+Use shadow properties for:
+  ✅ Audit fields you don't want polluting your model (CreatedBy, LastLoginAt)
+  ✅ DB-level concerns that shouldn't be in the domain model
+  ✅ Properties used only for filtering/sorting — not needed in C#
+```
+
+### Setup in configuration
 ```csharp
-// In migration Up() — use migrationBuilder.Sql()
-protected override void Up(MigrationBuilder migrationBuilder)
+// In UserConfiguration.cs
+// No C# property on User class — exists only in DB
+builder.Property<DateTime?>("LastLoginAt")
+    .HasColumnName("LastLoginAt")
+    .IsRequired(false);
+
+builder.Property<string>("CreatedBy")
+    .HasColumnName("CreatedBy")
+    .HasMaxLength(100)
+    .IsRequired(false);
+```
+
+### Reading and writing shadow properties
+```csharp
+// WRITE — via ChangeTracker entry
+_context.Entry(user)
+    .Property<DateTime?>("LastLoginAt")
+    .CurrentValue = DateTime.UtcNow;
+
+// READ — via ChangeTracker entry
+var createdBy = _context.Entry(user)
+    .Property<string>("CreatedBy")
+    .CurrentValue;
+
+// USE IN QUERY — via EF.Property<T>()
+var recentLogins = await _context.Users
+    .OrderByDescending(u => EF.Property<DateTime?>(u, "LastLoginAt"))
+    .ToListAsync();
+```
+
+---
+
+## 4️⃣ Value Converters
+
+Value Converters transform a property's value **between C# and the database**.
+
+```
+C# value  →  [converter]  →  DB value
+DB value  →  [converter]  →  C# value
+```
+
+### Our example — store Role as uppercase
+```csharp
+builder.Property(u => u.Role)
+    .HasConversion(
+        v => v.ToUpper(),   // C# → DB: "Admin" becomes "ADMIN"
+        v => v              // DB → C#: "ADMIN" stays "ADMIN"
+    );
+```
+
+### Common Value Converter uses
+```csharp
+// Store enum as string
+builder.Property(u => u.Status)
+    .HasConversion(
+        v => v.ToString(),              // C#: Status.Active → DB: "Active"
+        v => Enum.Parse<Status>(v)      // DB: "Active" → C#: Status.Active
+    );
+
+// Store bool as "Y"/"N" string
+builder.Property(u => u.IsActive)
+    .HasConversion(
+        v => v ? "Y" : "N",            // C#: true → DB: "Y"
+        v => v == "Y"                  // DB: "Y" → C#: true
+    );
+
+// Store list as comma-separated string
+builder.Property(u => u.Tags)
+    .HasConversion(
+        v => string.Join(",", v),       // C#: ["a","b"] → DB: "a,b"
+        v => v.Split(",").ToList()      // DB: "a,b" → C#: ["a","b"]
+    );
+```
+
+---
+
+## 5️⃣ Concurrency Handling — RowVersion
+
+Concurrency conflicts happen when **two users try to update the same row simultaneously**.
+
+### The Problem
+```
+Time 1: User A reads row  → { FullName: "Alice", RowVersion: [1,2,3] }
+Time 1: User B reads row  → { FullName: "Alice", RowVersion: [1,2,3] }
+
+Time 2: User A saves      → { FullName: "Bob",   RowVersion: [4,5,6] }  ✅
+Time 2: User B tries save → { FullName: "Carol",  RowVersion: [1,2,3] }  ← stale!
+
+Without concurrency check:
+  User B's save OVERWRITES User A's changes silently ❌
+
+With RowVersion:
+  EF Core: WHERE Id = @id AND RowVersion = [1,2,3]
+  SQL Server: RowVersion is now [4,5,6] — WHERE fails → 0 rows affected
+  EF Core throws: DbUpdateConcurrencyException ✅
+```
+
+### Setup
+
+Model:
+```csharp
+[Timestamp]
+public byte[] RowVersion { get; set; } = Array.Empty<byte>();
+```
+
+Configuration:
+```csharp
+builder.Property(u => u.RowVersion)
+    .IsRowVersion()         // SQL Server auto-increments this on every UPDATE
+    .HasColumnName("RowVersion")
+    .IsRequired();
+```
+
+### Handling the exception
+```csharp
+try
 {
-    migrationBuilder.Sql(@"
-        CREATE PROCEDURE sp_GetActiveUsersByRole
-            @Role NVARCHAR(20)
-        AS
-        BEGIN
-            SELECT * FROM Users
-            WHERE Role = @Role AND IsActive = 1
-            ORDER BY FullName;
-        END
-    ");
+    _context.Users.Update(user);
+    await _context.SaveChangesAsync();
+    // EF Core SQL:
+    // UPDATE Users SET FullName = @name
+    // WHERE Id = @id AND RowVersion = @rowVersion
+    // ↑ if RowVersion changed → 0 rows affected → exception thrown
 }
-
-// In migration Down() — drop the procedure
-protected override void Down(MigrationBuilder migrationBuilder)
+catch (DbUpdateConcurrencyException ex)
 {
-    migrationBuilder.Sql("DROP PROCEDURE IF EXISTS sp_GetActiveUsersByRole");
+    // Another user modified this record between our read and write
+    // Options:
+    //   1. Tell user to reload and try again (client wins)
+    //   2. Keep database values (database wins)
+    //   3. Merge changes manually
+    throw new InvalidOperationException(
+        "Record was modified by another user. Please reload and try again.");
 }
 ```
 
-> 💡 Always create stored procedures via migrations so they are version-controlled
-> and applied consistently across all environments.
+### Sending RowVersion from client
+```
+GET /api/users/1  →  response includes RowVersion as base64 string
+
+Client stores the RowVersion
+Client sends it back in X-Row-Version header on PUT request
+
+Server reads header → converts from base64 → bytes
+Server includes in WHERE clause via EF Core
+```
 
 ---
 
-## 4️⃣ FromSqlRaw vs ExecuteSqlRaw — Side by Side
+## 6️⃣ Interceptors
 
-| | `FromSqlRaw` | `ExecuteSqlRaw` |
-|--|-------------|----------------|
-| Returns | `IQueryable<T>` — tracked entities | `int` — rows affected |
-| Used for | SELECT queries | UPDATE / DELETE / INSERT |
-| Tracking | Yes (use AsNoTracking to disable) | N/A — no entities returned |
-| LINQ chainable | ✅ Yes | ❌ No |
-| Called on | `_dbSet` | `_context.Database` |
-| Stored Procs | ✅ That return rows | ✅ That don't return rows |
+Interceptors hook into EF Core pipeline **before or after operations**.
 
----
+### Types of interceptors
 
-## 5️⃣ SQL Injection Protection
+| Interceptor | Hooks into |
+|-------------|-----------|
+| `SaveChangesInterceptor` | `SaveChangesAsync` / `SaveChanges` |
+| `DbCommandInterceptor` | Every SQL command |
+| `DbConnectionInterceptor` | DB connection open/close |
+| `DbTransactionInterceptor` | Transaction begin/commit/rollback |
 
-Always use parameterized queries — NEVER string concatenation or interpolation.
-
+### Our `AuditInterceptor`
 ```csharp
-// ❌ DANGEROUS — SQL injection vulnerability
-var role = "Admin' OR '1'='1";  // attacker input
-_dbSet.FromSqlRaw($"SELECT * FROM Users WHERE Role = '{role}'");
-// Generates: WHERE Role = 'Admin' OR '1'='1'
-// Returns ALL users regardless of role ❌
+public class AuditInterceptor : SaveChangesInterceptor
+{
+    // Called BEFORE changes are saved to DB
+    public override ValueTask<InterceptionResult<int>> SavingChangesAsync(
+        DbContextEventData      eventData,
+        InterceptionResult<int> result,
+        CancellationToken       cancellationToken = default)
+    {
+        var context = eventData.Context;
 
-// ✅ SAFE — parameterized query
-_dbSet.FromSqlRaw("SELECT * FROM Users WHERE Role = {0}", role);
-// EF Core sends: WHERE Role = @p0  with value 'Admin'' OR ''1''=''1'
-// SQL Server treats the entire value as a string literal ✅
-// Returns: zero results (no role named that) ✅
+        foreach (var entry in context.ChangeTracker.Entries<User>())
+        {
+            if (entry.State == EntityState.Added)
+            {
+                // Auto-set shadow property on every new User
+                entry.Property("CreatedBy").CurrentValue = "System";
+            }
+        }
+
+        return base.SavingChangesAsync(eventData, result, cancellationToken);
+    }
+}
 ```
 
-### Three safe ways to parameterize
+### Registering the interceptor
 ```csharp
-// Option 1 — positional {0}, {1}, {2}
-_dbSet.FromSqlRaw("SELECT * FROM Users WHERE Role = {0}", role)
+// In ServiceCollectionExtensions.cs
+services.AddSingleton<AuditInterceptor>();   // register in DI
 
-// Option 2 — SqlParameter objects
-var param = new SqlParameter("@role", role);
-_dbSet.FromSqlRaw("SELECT * FROM Users WHERE Role = @role", param)
+services.AddDbContext<AppDbContext>((sp, options) =>
+    options.UseSqlServer(connectionString)
+           .AddInterceptors(sp.GetRequiredService<AuditInterceptor>())
+           //                 ↑ EF Core calls this on every SaveChangesAsync
+);
+```
 
-// Option 3 — FormattableString (FromSqlInterpolated)
-_dbSet.FromSqlInterpolated($"SELECT * FROM Users WHERE Role = {role}")
-// EF Core automatically parameterizes the interpolated values ✅
+### Why Singleton for interceptor?
+```
+Interceptor is registered as Singleton:
+  - Created ONCE for the lifetime of the app
+  - Shared across all DbContext instances
+  - Fine because AuditInterceptor has no state
+
+DbContext is Scoped (per request):
+  - New instance per HTTP request
+  - Each instance uses the same Singleton interceptor
 ```
 
 ---
 
-## 6️⃣ Full Layer Flow
-
-### `GET /api/users/raw-sql/by-role/Admin`
+## 7️⃣ How Everything Works Together
 
 ```
-UsersController.GetByRoleRawSql("Admin")
-      │
-      ▼
-UserService.GetByRoleRawSqlAsync("Admin")
-      │
-      ▼
-UserRepository.GetByRoleRawSqlAsync("Admin")
-      │
-      ▼
-_dbSet.FromSqlRaw("SELECT * FROM Users WHERE Role = {0}", "Admin")
-      │
-SQL:  SELECT * FROM Users WHERE Role = @p0   (@p0 = 'Admin')
-      │
-      ▼
-EF Core maps rows → List<User>
-      │
-      ▼
-UserService maps → List<UserResponseDto>
-      │
-      ▼
-Controller returns 200 OK
-```
+POST /api/users  (creates a new user)
+        │
+        ▼
+UserService.CreateAsync(dto)
+        │
+        ▼
+_unitOfWork.Users.AddAsync(user)      ← user.IsDeleted = false by default
+        │
+        ▼
+_unitOfWork.SaveChangesAsync()
+        │
+        ▼
+AuditInterceptor.SavingChangesAsync() ← interceptor fires!
+  └── entry.State == Added
+  └── sets shadow property "CreatedBy" = "System"
+        │
+        ▼
+EF Core SQL:
+  INSERT INTO Users (FullName, Email, Role, IsDeleted, CreatedBy, ...)
+  VALUES (@name, @email, 'MEMBER', 0, 'System', ...)
+  --                      ↑ value converter: "Member" → "MEMBER"
+  --                               ↑ global filter default
 
-### `PATCH /api/users/raw-sql/bulk-deactivate/Member`
 
-```
-UsersController.BulkDeactivateRawSql("Member")
-      │
-      ▼
-UserService.BulkDeactivateByRoleAsync("Member")
-      │
-      ▼
-UserRepository.BulkDeactivateByRoleAsync("Member")
-      │
-      ▼
-_context.Database.ExecuteSqlRawAsync(
-    "UPDATE Users SET IsActive = 0 WHERE Role = {0}", "Member")
-      │
-SQL:  UPDATE Users SET IsActive = 0, UpdatedAt = GETUTCDATE()
-      WHERE Role = @p0   (@p0 = 'Member')
-      │
-      ▼
-Returns: 3 (rows affected)
-      │
-      ▼
-Controller returns 200 OK with RawSqlDemo { RowsAffected = 3 }
+DELETE /api/users/soft-delete/1
+        │
+        ▼
+UserService.SoftDeleteAsync(1)
+        │
+        ▼
+user.IsDeleted = true
+_unitOfWork.SaveChangesAsync()
+        │
+        ▼
+EF Core SQL:
+  UPDATE Users SET IsDeleted = 1, UpdatedAt = @now WHERE Id = 1
+
+GET /api/users  (after soft delete)
+        │
+        ▼
+EF Core SQL:
+  SELECT * FROM Users WHERE IsDeleted = 0
+  --                        ↑ Global Query Filter auto-injected!
+  -- User 1 NOT returned ✅
+
+GET /api/users/including-deleted
+        │
+        ▼
+_dbSet.IgnoreQueryFilters().ToListAsync()
+EF Core SQL:
+  SELECT * FROM Users   ← no filter!
+  -- User 1 IS returned ✅
 ```
 
 ---
 
 ## 🌐 Endpoints Added in This Step
 
-| Method | Endpoint | Method Used | Demonstrates |
-|--------|----------|-------------|-------------|
-| `GET` | `/api/users/raw-sql/by-role/{role}` | `FromSqlRaw` | Raw SELECT |
-| `GET` | `/api/users/raw-sql/by-email?email=` | `FromSqlRaw` | Raw SELECT with param |
-| `PATCH` | `/api/users/raw-sql/deactivate/{id}` | `ExecuteSqlRaw` | Raw UPDATE single row |
-| `PATCH` | `/api/users/raw-sql/bulk-deactivate/{role}` | `ExecuteSqlRaw` | Raw bulk UPDATE |
-| `GET` | `/api/users/sp/active-by-role/{role}` | `FromSqlRaw` + SP | Stored Proc returning rows |
-| `PATCH` | `/api/users/sp/update-role/{id}?newRole=` | `ExecuteSqlRaw` + SP | Stored Proc no rows |
+| Method | Endpoint | Demonstrates |
+|--------|----------|-------------|
+| `DELETE` | `/api/users/soft-delete/{id}` | Soft Delete |
+| `GET` | `/api/users` | Global Filter hides deleted |
+| `GET` | `/api/users/including-deleted` | IgnoreQueryFilters |
+| `GET` | `/api/users/{id}/advanced-demo` | Shadow Props + Global Filter |
+| `PUT` | `/api/users/{id}/concurrency-update` | RowVersion concurrency |
 
 ---
 
-## 🧪 Test Endpoints
+## 🧪 Test Sequence
 
-| Endpoint | Expected Result |
-|----------|----------------|
-| `GET /api/users/raw-sql/by-role/Admin` | All Admin users |
-| `GET /api/users/raw-sql/by-role/Member` | All Member users |
-| `GET /api/users/raw-sql/by-email?email=alice@app.com` | Alice's user object |
-| `PATCH /api/users/raw-sql/deactivate/1` | `rowsAffected: 1` |
-| `PATCH /api/users/raw-sql/bulk-deactivate/Member` | `rowsAffected: N` |
-| `GET /api/users/sp/active-by-role/Admin` | Active admins via SP |
-| `PATCH /api/users/sp/update-role/1?newRole=Admin` | Role updated via SP |
+```
+1. GET  /api/users                     → see all users (none deleted)
+2. DELETE /api/users/soft-delete/1     → soft delete user 1
+3. GET  /api/users                     → user 1 NOT in list (global filter)
+4. GET  /api/users/including-deleted   → user 1 IS in list (filter ignored)
+5. GET  /api/users/1/advanced-demo     → see shadow props + filter counts
+6. PUT  /api/users/1/concurrency-update
+         Header: X-Row-Version: <base64 from GET>
+         Body: { "fullName": "...", "role": "...", "isActive": true }
+```
 
 ---
 
@@ -335,66 +415,66 @@ Controller returns 200 OK with RawSqlDemo { RowsAffected = 3 }
 
 | Rule | Reason |
 |------|--------|
-| Always use `{0}` parameters, never string interpolation | SQL injection prevention |
-| `FromSqlRaw` must SELECT all entity columns | EF Core needs to map all properties |
-| `ExecuteSqlRaw` called on `_context.Database` not `_dbSet` | It doesn't return entities |
-| Create stored procedures in migrations | Version controlled, consistent across environments |
-| Use `DROP PROCEDURE IF EXISTS` in `Down()` | Safe rollback of SP migration |
-| Prefer LINQ over raw SQL when possible | LINQ is database-agnostic and safer |
-| Use raw SQL for bulk operations | Far more efficient than loading entities |
+| Always use Soft Delete in production | Data recovery, audit trail, referential integrity |
+| Global Query Filters apply to related data via Include | Soft-deleted children are hidden automatically |
+| Use `IgnoreQueryFilters()` for admin/audit views | To see all records including deleted |
+| Shadow properties for DB-only concerns | Keeps domain model clean |
+| Always handle `DbUpdateConcurrencyException` | Silent data loss without it |
+| Register interceptors as Singleton | They are stateless — one instance is fine |
+| Value Converters run on every read and write | Keep them lightweight — no complex logic |
 
 ---
 
 ## 🚀 How to Run
 
 ```bash
-# Create migration for stored procedures
-dotnet ef migrations add AddStoredProcedures --output-dir Data/Migrations
-
-# Edit the migration file — add SP creation in Up() and drop in Down()
-
-# Apply
+# Create migration for new columns
+dotnet ef migrations add AddAdvancedFeatures --output-dir Data/Migrations
 dotnet ef database update
 
 # Run
 dotnet run
-
-# Test all endpoints in Swagger
 ```
 
 ---
 
-## ✅ Folder Structure After Step 11
+## ✅ Folder Structure After Step 12
 
 ```
 TaskManagerAPI/
 ├── Controllers/
-│   └── UsersController.cs                  ← Updated (6 new endpoints)
+│   └── UsersController.cs                  ← Updated (4 new endpoints)
 ├── DTOs/
 │   └── User/
-│       └── RawSqlDemo.cs                   ← NEW
+│       └── AdvancedFeaturesDemo.cs         ← NEW
 ├── Data/
+│   ├── AppDbContext.cs                     ← Updated (Global Query Filters)
+│   ├── Configurations/
+│   │   └── UserConfiguration.cs           ← Updated (Shadow Props, ValueConverter, RowVersion)
+│   ├── Interceptors/
+│   │   └── AuditInterceptor.cs            ← NEW
 │   └── Migrations/
-│       └── XXXXXX_AddStoredProcedures.cs   ← NEW
+│       └── XXXXXX_AddAdvancedFeatures.cs  ← NEW
+├── Extensions/
+│   └── ServiceCollectionExtensions.cs     ← Updated (interceptor registered)
+├── Models/
+│   └── User.cs                            ← Updated (RowVersion added)
 ├── Repositories/
 │   ├── Interfaces/
-│   │   └── IUserRepository.cs              ← Updated (raw SQL methods)
+│   │   └── IUserRepository.cs             ← Updated (soft delete + shadow props)
 │   └── Implementations/
-│       └── UserRepository.cs               ← Updated (raw SQL implementations)
+│       └── UserRepository.cs              ← Updated (soft delete + shadow props)
 └── Services/
     ├── Interfaces/
-    │   └── IUserService.cs                 ← Updated (raw SQL methods)
+    │   └── IUserService.cs                ← Updated (advanced methods)
     └── Implementations/
-        └── UserService.cs                  ← Updated (raw SQL implementations)
+        └── UserService.cs                 ← Updated (advanced implementations)
 ```
 
 ---
 
-## ✅ What's Next — Step 12: Advanced Features
+## ✅ What's Next — Step 13: Data Seeding
 In the next step we will:
-- **Global Query Filters** — automatically filter all queries (e.g. soft delete)
-- **Soft Delete** — mark records as deleted instead of removing them
-- **Concurrency Handling** — `RowVersion` to prevent conflicting updates
-- **Shadow Properties** — DB columns with no C# property
-- **Value Converters** — transform values between C# and DB
-- **Interceptors** — hook into EF Core operations
+- **HasData** — seed initial data in entity configurations
+- **Seed with migrations** — initial data applied when DB is created
+- Seed roles, default users, and labels
