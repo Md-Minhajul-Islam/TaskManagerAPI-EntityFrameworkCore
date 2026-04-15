@@ -142,5 +142,34 @@ public class UserConfiguration : IEntityTypeConfiguration<User>
             .HasColumnName("CreatedBy")
             .HasMaxLength(100)
             .IsRequired(false);
+
+
+        // ── Seed Data ──────────────────────────────────────────────────────────────
+    // Seed a default system admin user
+    // Hardcoded Id and CreatedAt — required by HasData
+    // RowVersion cannot be seeded (auto-managed by SQL Server)
+    // Shadow properties (CreatedBy, LastLoginAt) cannot be seeded via HasData
+    builder.HasData(
+        new User
+        {
+            Id        = 10,
+            FullName  = "System Admin",
+            Email     = "admin@taskmanager.com",
+            Role      = "ADMIN",            // Value converter stores uppercase
+            IsActive  = true,
+            IsDeleted = false,
+            CreatedAt = new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc)
+        },
+        new User
+        {
+            Id        = 11,
+            FullName  = "Demo User",
+            Email     = "demo@taskmanager.com",
+            Role      = "MEMBER",
+            IsActive  = true,
+            IsDeleted = false,
+            CreatedAt = new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc)
+        }
+    );
     }
 }

@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("TaskManagerAPI-EntityFrameworkCore")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+39d742e6387044bf8ddd3b8540c734e1227282e2")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+e3582e42c04cd1d9bdf93cf30c2ead7868ca96ff")]
 [assembly: System.Reflection.AssemblyProductAttribute("TaskManagerAPI-EntityFrameworkCore")]
 [assembly: System.Reflection.AssemblyTitleAttribute("TaskManagerAPI-EntityFrameworkCore")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
